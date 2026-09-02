@@ -34,7 +34,7 @@ async function createTodo(event) {
 
    const id = -Math.floor(1 + Math.random() * 2_000_000_000)
    await db.transaction(async (tx) => {
-      await tx.query('INSERT INTO todo (id, label, completed, pending) VALUES ($1, $2, false, true)', [id, label])
+      await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
       await tx.query(
          `INSERT INTO mutation_queue (action, todo_id, label, completed)
          VALUES ('create', $1, $2, false)`,
@@ -52,7 +52,7 @@ async function editTodo(id, label, completed) {
 
    await db.transaction(async (tx) => {
       await tx.query(
-         'UPDATE todo SET label = $1, completed = $2, pending = true WHERE id = $3',
+         'UPDATE todo SET label = $1, completed = $2 WHERE id = $3',
          [cleanLabel, completed, id],
       )
       const queued = await tx.query('SELECT seq, action FROM mutation_queue WHERE todo_id = $1 ORDER BY seq LIMIT 1', [id])
@@ -88,7 +88,14 @@ async function deleteTodo(id) {
 }
 
 async function render() {
-   const { rows } = await db.query('SELECT * FROM todo ORDER BY id')
+   const { rows } = await db.query(`
+      SELECT todo.*,
+             EXISTS (
+                SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+             ) AS pending
+      FROM todo
+      ORDER BY id
+   `)
    list.replaceChildren(...rows.map(todoElement))
    empty.hidden = rows.length > 0
    updateStatus()
@@ -138,7 +145,10 @@ function todoElement(todo) {
 function startElectricSync() {
    const stream = new ShapeStream({
       url: 'http://localhost:3200/v1/shape',
-      params: { table: 'todo', where: 'true' },
+      params: {
+         table: 'todo',
+         where: 'true',
+      },
    })
    const shape = new Shape(stream)
 
@@ -165,19 +175,32 @@ async function applyRemoteRows(remoteRows) {
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
          const id = Number(row.id)
-         const local = await tx.query('SELECT pending FROM todo WHERE id = $1', [id])
-         if (local.rows[0]?.pending) continue
+         const queued = await tx.query('SELECT 1 FROM mutation_queue WHERE todo_id = $1 LIMIT 1', [id])
+         if (queued.rows[0]) continue
          await tx.query(
-         `INSERT INTO todo (id, label, completed, pending) VALUES ($1, $2, $3, false)
+         `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
             ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,
          [id, row.label, row.completed],
          )
       }
 
       if (remoteIds.length) {
-         await tx.query('DELETE FROM todo WHERE id > 0 AND pending = false AND NOT (id = ANY($1::int[]))', [remoteIds])
+         await tx.query(`
+            DELETE FROM todo
+            WHERE id > 0
+              AND NOT (id = ANY($1::int[]))
+              AND NOT EXISTS (
+                 SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+              )
+         `, [remoteIds])
       } else {
-         await tx.query('DELETE FROM todo WHERE id > 0 AND pending = false')
+         await tx.query(`
+            DELETE FROM todo
+            WHERE id > 0
+              AND NOT EXISTS (
+                 SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+              )
+         `)
       }
    })
 }
@@ -217,7 +240,7 @@ async function sendMutation(mutation) {
          return
          }
          await tx.query(
-         'INSERT INTO todo (id, label, completed, pending) VALUES ($1, $2, $3, true)',
+         'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
          [serverTodo.id, current.rows[0].label, current.rows[0].completed],
          )
          await tx.query(
@@ -237,7 +260,6 @@ async function sendMutation(mutation) {
          const current = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          if (sameMutation(current.rows[0], mutation)) {
          await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
-         await tx.query('UPDATE todo SET pending = false WHERE id = $1', [mutation.todo_id])
          }
          if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [mutation.todo_id])
       })

@@ -7,8 +7,7 @@ export async function prepareLocalDB() {
     CREATE TABLE IF NOT EXISTS todo (
       id INTEGER PRIMARY KEY,
       label TEXT NOT NULL,
-      completed BOOLEAN NOT NULL DEFAULT FALSE,
-      pending BOOLEAN NOT NULL DEFAULT FALSE
+      completed BOOLEAN NOT NULL DEFAULT FALSE
     );
     CREATE TABLE IF NOT EXISTS mutation_queue (
       seq SERIAL PRIMARY KEY,

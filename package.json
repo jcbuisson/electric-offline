@@ -1,0 +1,22 @@
+{
+  "name": "electric-offline-todo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --watch backend/server.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node backend/server.js"
+  },
+  "dependencies": {
+    "@electric-sql/client": "^1.5.27",
+    "@electric-sql/pglite": "^0.5.8",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "vite": "^8.2.2"
+  }
+}

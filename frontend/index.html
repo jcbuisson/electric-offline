@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f4" />
+    <title>Offline Todos</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Electric + PGlite</p>
+          <h1>Things to do</h1>
+        </div>
+        <span id="status" class="status">Starting…</span>
+      </header>
+
+      <form id="new-todo-form">
+        <input id="new-todo" name="label" aria-label="New todo" placeholder="What needs doing?" autocomplete="off" required />
+        <button type="submit">Add</button>
+      </form>
+
+      <ul id="todo-list" aria-live="polite"></ul>
+      <p id="empty" class="empty" hidden>No todos yet.</p>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

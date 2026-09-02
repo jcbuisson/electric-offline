@@ -1,0 +1,27 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #20211d; background: #f7f7f4; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+main { width: min(680px, calc(100% - 32px)); margin: 8vh auto; }
+header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+h1 { margin: 2px 0 0; font-size: clamp(2rem, 7vw, 3.5rem); letter-spacing: -.055em; }
+.eyebrow { margin: 0; color: #6b6e65; font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.status { flex: none; color: #62655d; font-size: .83rem; }
+.status::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: #e0a52f; }
+.status.online::before { background: #4d9b61; }
+.status.offline::before { background: #c65b4a; }
+form { display: flex; gap: 10px; margin-bottom: 16px; }
+input, button { font: inherit; }
+input { min-width: 0; flex: 1; border: 1px solid #d9dad4; border-radius: 10px; background: white; padding: 14px 16px; outline: none; }
+input:focus { border-color: #868b7d; box-shadow: 0 0 0 3px #e7e9e2; }
+button { border: 0; border-radius: 10px; cursor: pointer; }
+form button { color: white; background: #252721; padding: 0 20px; font-weight: 650; }
+ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid #dedfd9; }
+li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; min-height: 58px; border-bottom: 1px solid #dedfd9; }
+li.pending { opacity: .65; }
+li input[type='checkbox'] { width: 18px; height: 18px; accent-color: #35382f; }
+.label { padding: 9px 2px; border-radius: 4px; outline: none; }
+.completed .label { color: #84877e; text-decoration: line-through; }
+.delete { color: #85877f; background: transparent; padding: 8px; font-size: 1.2rem; line-height: 1; }
+.delete:hover { color: #b23d31; }
+.empty { color: #81847b; text-align: center; margin-top: 42px; }
+@media (max-width: 480px) { main { margin-top: 5vh; } header { align-items: start; flex-direction: column; gap: 10px; } }

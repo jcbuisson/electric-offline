@@ -36,9 +36,9 @@ async function createTodo(event) {
    await db.transaction(async (tx) => {
       await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
       await tx.query(
-         `INSERT INTO mutation_queue (action, todo_id, label, completed)
-         VALUES ('create', $1, $2, false)`,
-         [id, label],
+         `INSERT INTO mutation_queue (table_name, action, row_id, payload)
+         VALUES ('todo', 'create', $1, $2::jsonb)`,
+         [String(id), JSON.stringify({ label, completed: false })],
       )
    })
    input.value = ''
@@ -55,16 +55,19 @@ async function editTodo(id, label, completed) {
          'UPDATE todo SET label = $1, completed = $2 WHERE id = $3',
          [cleanLabel, completed, id],
       )
-      const queued = await tx.query('SELECT seq, action FROM mutation_queue WHERE todo_id = $1 ORDER BY seq LIMIT 1', [id])
+      const queued = await tx.query(
+         "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
+         [String(id)],
+      )
       if (queued.rows[0]?.action === 'create') {
-         await tx.query('UPDATE mutation_queue SET label = $1, completed = $2 WHERE seq = $3', [cleanLabel, completed, queued.rows[0].seq])
+         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
       } else if (queued.rows[0]?.action === 'update') {
-         await tx.query('UPDATE mutation_queue SET label = $1, completed = $2 WHERE seq = $3', [cleanLabel, completed, queued.rows[0].seq])
+         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
       } else {
          await tx.query(
-         `INSERT INTO mutation_queue (action, todo_id, label, completed)
-            VALUES ('update', $1, $2, $3)`,
-         [id, cleanLabel, completed],
+         `INSERT INTO mutation_queue (table_name, action, row_id, payload)
+            VALUES ('todo', 'update', $1, $2::jsonb)`,
+         [String(id), JSON.stringify({ label: cleanLabel, completed })],
          )
       }
    })
@@ -75,12 +78,18 @@ async function editTodo(id, label, completed) {
 async function deleteTodo(id) {
    await db.transaction(async (tx) => {
       await tx.query('DELETE FROM todo WHERE id = $1', [id])
-      const queued = await tx.query('SELECT seq, action FROM mutation_queue WHERE todo_id = $1 ORDER BY seq LIMIT 1', [id])
+      const queued = await tx.query(
+         "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
+         [String(id)],
+      )
       if (queued.rows[0]?.action === 'create') {
-         await tx.query('DELETE FROM mutation_queue WHERE todo_id = $1', [id])
+         await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
       } else {
-         await tx.query('DELETE FROM mutation_queue WHERE todo_id = $1', [id])
-         await tx.query("INSERT INTO mutation_queue (action, todo_id) VALUES ('delete', $1)", [id])
+         await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
+         await tx.query(
+            "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
+            [String(id)],
+         )
       }
    })
    await render()
@@ -92,7 +101,9 @@ async function render() {
    const { rows } = await db.query(`
       SELECT todo.*,
          EXISTS (
-            SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+            SELECT 1 FROM mutation_queue
+            WHERE mutation_queue.table_name = 'todo'
+              AND mutation_queue.row_id = todo.id::text
          ) AS pending
       FROM todo
       ORDER BY id
@@ -179,7 +190,10 @@ async function applyRemoteRows(remoteRows) {
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
          const id = Number(row.id)
-         const queued = await tx.query('SELECT 1 FROM mutation_queue WHERE todo_id = $1 LIMIT 1', [id])
+         const queued = await tx.query(
+            "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
+            [String(id)],
+         )
          if (queued.rows[0]) continue
          await tx.query(
          `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
@@ -194,7 +208,9 @@ async function applyRemoteRows(remoteRows) {
             WHERE id > 0
               AND NOT (id = ANY($1::int[]))
               AND NOT EXISTS (
-                 SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+                 SELECT 1 FROM mutation_queue
+                 WHERE mutation_queue.table_name = 'todo'
+                   AND mutation_queue.row_id = todo.id::text
               )
          `, [remoteIds])
       } else {
@@ -202,7 +218,9 @@ async function applyRemoteRows(remoteRows) {
             DELETE FROM todo
             WHERE id > 0
               AND NOT EXISTS (
-                 SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+                 SELECT 1 FROM mutation_queue
+                 WHERE mutation_queue.table_name = 'todo'
+                   AND mutation_queue.row_id = todo.id::text
               )
          `)
       }
@@ -229,48 +247,64 @@ async function flushQueue() {
 }
 
 async function sendMutation(mutation) {
+   const handler = mutationHandlers[mutation.table_name]
+   if (!handler) throw new Error(`No mutation handler for table: ${mutation.table_name}`)
+   await handler(mutation)
+}
+
+const mutationHandlers = {
+   todo: sendTodoMutation,
+}
+
+async function sendTodoMutation(mutation) {
+   const rowId = Number(mutation.row_id)
+   const payload = mutation.payload
+
    if (mutation.action === 'create') {
       const serverTodo = await api('/api/todos', {
          method: 'POST',
-         body: JSON.stringify({ label: mutation.label, completed: mutation.completed }),
+         body: JSON.stringify(payload),
       })
       await db.transaction(async (tx) => {
-         const current = await tx.query('SELECT * FROM todo WHERE id = $1', [mutation.todo_id])
+         const current = await tx.query('SELECT * FROM todo WHERE id = $1', [rowId])
          const stillQueued = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
-         await tx.query('DELETE FROM todo WHERE id = $1', [mutation.todo_id])
+         await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
          if (!current.rows[0] || !stillQueued.rows[0]) {
-         await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
-         await tx.query("INSERT INTO mutation_queue (action, todo_id) VALUES ('delete', $1)", [serverTodo.id])
-         return
+            await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+            await tx.query(
+               "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
+               [String(serverTodo.id)],
+            )
+            return
          }
          await tx.query(
-         'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
-         [serverTodo.id, current.rows[0].label, current.rows[0].completed],
+            'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
+            [serverTodo.id, current.rows[0].label, current.rows[0].completed],
          )
          await tx.query(
-         "UPDATE mutation_queue SET action = 'update', todo_id = $1, label = $2, completed = $3 WHERE seq = $4",
-         [serverTodo.id, current.rows[0].label, current.rows[0].completed, mutation.seq],
+            "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb WHERE seq = $3",
+            [String(serverTodo.id), JSON.stringify({ label: current.rows[0].label, completed: current.rows[0].completed }), mutation.seq],
          )
       })
       return
    }
 
    if (mutation.action === 'update') {
-      const response = await api(`/api/todos/${mutation.todo_id}`, {
+      const response = await api(`/api/todos/${rowId}`, {
          method: 'PUT',
-         body: JSON.stringify({ label: mutation.label, completed: mutation.completed }),
+         body: JSON.stringify(payload),
       }, true)
       await db.transaction(async (tx) => {
          const current = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          if (sameMutation(current.rows[0], mutation)) {
          await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
          }
-         if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [mutation.todo_id])
+         if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
       })
       return
    }
 
-   await api(`/api/todos/${mutation.todo_id}`, { method: 'DELETE' }, true)
+   await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
    await db.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
 }
 
@@ -287,8 +321,8 @@ async function api(url, options, allowNotFound = false) {
 }
 
 function sameMutation(a, b) {
-   return a && a.action === b.action && a.todo_id === b.todo_id &&
-      a.label === b.label && a.completed === b.completed
+   return a && a.table_name === b.table_name && a.action === b.action &&
+      a.row_id === b.row_id && JSON.stringify(a.payload) === JSON.stringify(b.payload)
 }
 
 async function updateStatus() {

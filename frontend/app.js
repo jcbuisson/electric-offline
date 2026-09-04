@@ -38,6 +38,7 @@ async function createTodo(event) {
    flushQueue()
 }
 
+// The generated local id is negative so that it cannot conflict with server database ids
 async function insertTodoWithUniqueLocalId(label) {
    const maxAttempts = 10
    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -53,7 +54,8 @@ async function insertTodoWithUniqueLocalId(label) {
          })
          return
       } catch (error) {
-         if (error.code !== '23505' || attempt === maxAttempts) throw error
+         if (error.code !== '23505' // unique constraint violation
+            || attempt === maxAttempts) throw error
       }
    }
 }

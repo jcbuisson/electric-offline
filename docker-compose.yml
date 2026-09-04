@@ -1,0 +1,19 @@
+# docker-compose.yml
+services:
+  electric-todo:
+    image: electricsql/electric:1.7.8
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql://chris:eureka31@host.docker.internal:5432/todoDB
+      ELECTRIC_INSECURE: "true"
+      ELECTRIC_STORAGE: FAST_FILE
+      ELECTRIC_PERSISTENT_STATE: FILE
+      ELECTRIC_STORAGE_DIR: /var/lib/electric
+    ports:
+      - "3200:3000"
+    volumes:
+      - electric_todo_data:/var/lib/electric
+
+volumes:
+  electric_todo_data:

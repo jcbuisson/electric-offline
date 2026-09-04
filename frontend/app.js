@@ -32,18 +32,30 @@ async function createTodo(event) {
    const label = input.value.trim()
    if (!label) return
 
-   const id = -Math.floor(1 + Math.random() * 2_000_000_000)
-   await db.transaction(async (tx) => {
-      await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
-      await tx.query(
-         `INSERT INTO mutation_queue (table_name, action, row_id, payload)
-         VALUES ('todo', 'create', $1, $2::jsonb)`,
-         [String(id), JSON.stringify({ label, completed: false })],
-      )
-   })
+   await insertTodoWithUniqueLocalId(label)
    input.value = ''
    await render()
    flushQueue()
+}
+
+async function insertTodoWithUniqueLocalId(label) {
+   const maxAttempts = 10
+   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const id = -Math.floor(1 + Math.random() * 2_000_000_000)
+      try {
+         await db.transaction(async (tx) => {
+            await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
+            // NOTE that row_id is a string, to accomodate all types of primary keys
+            await tx.query(
+               `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'create', $1, $2::jsonb)`,
+               [String(id), JSON.stringify({ label, completed: false })],
+            )
+         })
+         return
+      } catch (error) {
+         if (error.code !== '23505' || attempt === maxAttempts) throw error
+      }
+   }
 }
 
 async function editTodo(id, label, completed) {
@@ -59,6 +71,7 @@ async function editTodo(id, label, completed) {
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
+      // NOTE that row_id is a string, to accomodate all types of primary keys
       if (queued.rows[0]?.action === 'create') {
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
       } else if (queued.rows[0]?.action === 'update') {
@@ -82,6 +95,7 @@ async function deleteTodo(id) {
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
+      // NOTE that row_id is a string, to accomodate all types of primary keys
       if (queued.rows[0]?.action === 'create') {
          await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
       } else {
@@ -143,6 +157,15 @@ function todoElement(todo) {
       if (label.textContent !== todo.label) editTodo(todo.id, label.textContent, todo.completed)
    })
 
+   const localId = document.createElement('span')
+   localId.className = 'local-id'
+   localId.textContent = `#${todo.id}`
+   localId.title = 'Local database ID'
+
+   const description = document.createElement('div')
+   description.className = 'todo-description'
+   description.append(label, localId)
+
    const remove = document.createElement('button')
    remove.className = 'delete'
    remove.type = 'button'
@@ -150,7 +173,7 @@ function todoElement(todo) {
    remove.setAttribute('aria-label', `Delete ${todo.label}`)
    remove.addEventListener('click', () => deleteTodo(todo.id))
 
-   item.append(checkbox, label, remove)
+   item.append(checkbox, description, remove)
    return item
 }
 
@@ -196,9 +219,9 @@ async function applyRemoteRows(remoteRows) {
          )
          if (queued.rows[0]) continue
          await tx.query(
-         `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
-            ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,
-         [id, row.label, row.completed],
+            `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
+               ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,
+            [id, row.label, row.completed],
          )
       }
 
@@ -297,7 +320,7 @@ async function sendTodoMutation(mutation) {
       await db.transaction(async (tx) => {
          const current = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          if (sameMutation(current.rows[0], mutation)) {
-         await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+            await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
          }
          if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
       })

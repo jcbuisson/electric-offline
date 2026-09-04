@@ -88,11 +88,12 @@ async function deleteTodo(id) {
 }
 
 async function render() {
+   // returns every todo and adds a computed 'pending' boolean
    const { rows } = await db.query(`
       SELECT todo.*,
-             EXISTS (
-                SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
-             ) AS pending
+         EXISTS (
+            SELECT 1 FROM mutation_queue WHERE mutation_queue.todo_id = todo.id
+         ) AS pending
       FROM todo
       ORDER BY id
    `)
@@ -152,12 +153,15 @@ function startElectricSync() {
    })
    const shape = new Shape(stream)
 
+   // Subscribe to shape's current dataset
    shape.subscribe(async ({ rows }) => {
       syncConnected = true
       await applyRemoteRows(rows)
       await render()
    })
 
+   // Subscribe to raw Electric protocol messages: insert, update, delete, up-to-date, must-refetch, etc.
+   // Used here to update sync status
    stream.subscribe(
       () => {
          syncConnected = stream.isConnected()

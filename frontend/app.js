@@ -85,7 +85,7 @@ async function editTodo(id, label, completed) {
          // update existing mutation payload
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
       } else {
-         throw new Error(`Cannot edit todo with pending ${mutation.action} mutation`)
+         throw new Error(`Cannot edit todo with pending ${existingMutation.action} mutation`)
       }
    })
    await render()
@@ -101,14 +101,25 @@ async function deleteTodo(id) {
          [String(id)],
       )
       const existingMutation = queued.rows[0]
-      if (existingMutation?.action === 'create') {
-         await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
-      } else {
-         await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
+      if (!existingMutation) {
+         // queue a new delete mutation
          await tx.query(
             "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
             [String(id)],
          )
+      } else if (existingMutation.action === 'create') {
+         // the row never reached the server, so cancel its pending create
+         await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [existingMutation.seq])
+      } else if (existingMutation.action === 'update') {
+         // replace the pending update with a delete
+         await tx.query(
+            "UPDATE mutation_queue SET action = 'delete', payload = NULL WHERE seq = $1",
+            [existingMutation.seq],
+         )
+      } else if (existingMutation.action === 'delete') {
+         // a delete is already queued; no queue change is needed
+      } else {
+         throw new Error(`Cannot delete todo with pending ${existingMutation.action} mutation`)
       }
    })
    await render()

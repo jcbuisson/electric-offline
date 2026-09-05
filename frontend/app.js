@@ -69,15 +69,16 @@ async function editTodo(id, label, completed) {
          'UPDATE todo SET label = $1, completed = $2 WHERE id = $3',
          [cleanLabel, completed, id],
       )
-      // look for a current mutation relative to the same table and row_id
+      // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
-      if (queued.rows[0]?.action === 'create') {
-         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
-      } else if (queued.rows[0]?.action === 'update') {
-         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
+      const existingMutation = queued.rows[0]
+      if (existingMutation?.action === 'create') {
+         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
+      } else if (existingMutation?.action === 'update') {
+         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
       } else {
          await tx.query(
             `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'update', $1, $2::jsonb)`,
@@ -92,12 +93,13 @@ async function editTodo(id, label, completed) {
 async function deleteTodo(id) {
    await db.transaction(async (tx) => {
       await tx.query('DELETE FROM todo WHERE id = $1', [id])
-      // look for a current mutation relative to the same table and row_id
+      // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
-      if (queued.rows[0]?.action === 'create') {
+      const existingMutation = queued.rows[0]
+      if (existingMutation?.action === 'create') {
          await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
       } else {
          await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])

@@ -204,7 +204,7 @@ function startElectricSync() {
    // Subscribe to shape's current dataset
    shape.subscribe(async ({ rows }) => {
       syncConnected = true
-      await applyRemoteRows(rows)
+      await applyRemoteSnapshot(rows)
       await render()
    })
 
@@ -222,7 +222,8 @@ function startElectricSync() {
    )
 }
 
-async function applyRemoteRows(remoteRows) {
+async function applyRemoteSnapshot(remoteRows) {
+   // Reconciles against a complete, up-to-date table snapshot for subscribed shape
    const remoteIds = remoteRows.map((row) => Number(row.id))
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {

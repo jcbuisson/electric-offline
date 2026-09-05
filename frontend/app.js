@@ -191,6 +191,15 @@ function todoElement(todo) {
    return item
 }
 
+/*
+   The mutation lifecycle is:
+   1. A local change updates todo and adds a queue entry.
+   2. flushQueue() sends that mutation to the API.
+   3. A successful HTTP response acknowledges it.
+   4. sendTodoMutation() removes or transforms the queue entry.
+   5. Electric later delivers the resulting server state.
+*/
+
 function startElectricSync() {
    const stream = new ShapeStream({
       url: 'http://localhost:3200/v1/shape',
@@ -223,7 +232,7 @@ function startElectricSync() {
 }
 
 async function applyRemoteSnapshot(remoteRows) {
-   // Reconciles against a complete, up-to-date table snapshot for subscribed shape
+   // Reconciles against a complete, up-to-date shape's table snapshot
    const remoteIds = remoteRows.map((row) => Number(row.id))
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
@@ -232,6 +241,7 @@ async function applyRemoteSnapshot(remoteRows) {
             "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
             [String(id)],
          )
+         // pending queue entries protect local rows from being overwritten or deleted during snapshot reconciliation
          if (queued.rows[0]) continue
          await tx.query(
             `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
@@ -307,27 +317,27 @@ async function sendTodoMutation(mutation) {
          const current = await tx.query('SELECT * FROM todo WHERE id = $1', [rowId])
          const stillQueued = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
-         if (!current.rows[0] || !stillQueued.rows[0]) {
+
+         if (current.rows[0] && stillQueued.rows[0]) {
+            await tx.query(
+               'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
+               [serverTodo.id, current.rows[0].label, current.rows[0].completed],
+            )
+            await tx.query(
+               "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb WHERE seq = $3",
+               [String(serverTodo.id), JSON.stringify({ label: current.rows[0].label, completed: current.rows[0].completed }), mutation.seq],
+            )
+         } else {
             await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
             await tx.query(
                "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
                [String(serverTodo.id)],
             )
-            return
          }
-         await tx.query(
-            'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
-            [serverTodo.id, current.rows[0].label, current.rows[0].completed],
-         )
-         await tx.query(
-            "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb WHERE seq = $3",
-            [String(serverTodo.id), JSON.stringify({ label: current.rows[0].label, completed: current.rows[0].completed }), mutation.seq],
-         )
       })
-      return
    }
 
-   if (mutation.action === 'update') {
+   else if (mutation.action === 'update') {
       const response = await api(`/api/todos/${rowId}`, {
          method: 'PUT',
          body: JSON.stringify(payload),
@@ -339,11 +349,17 @@ async function sendTodoMutation(mutation) {
          }
          if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
       })
-      return
    }
 
-   await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
-   await db.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+   else if (mutation.action === 'delete') {
+      await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
+      await db.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+   }
+
+   else {
+      // defensive - should not happen
+      throw new Error(`Unsupported todo mutation action: ${mutation.action}`)
+   }
 }
 
 async function api(url, options, allowNotFound = false) {

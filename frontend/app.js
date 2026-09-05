@@ -76,10 +76,13 @@ async function editTodo(id, label, completed) {
       )
       const existingMutation = queued.rows[0]
       if (existingMutation?.action === 'create') {
+         // the todo only exists locally, update the payload of its pending create
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
       } else if (existingMutation?.action === 'update') {
+         // an update is already pending, replace its payload with the latest values
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
       } else {
+         // no create or update mutation was found, queue a new update
          await tx.query(
             `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'update', $1, $2::jsonb)`,
             [String(id), JSON.stringify({ label: cleanLabel, completed })],

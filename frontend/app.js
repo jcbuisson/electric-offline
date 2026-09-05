@@ -38,10 +38,10 @@ async function createTodo(event) {
    flushQueue()
 }
 
-// The generated local id is negative so that it cannot conflict with server database ids
 async function insertTodoWithUniqueLocalId(label) {
    const maxAttempts = 10
    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      // the generated local id is negative so that it cannot conflict with server database ids
       const id = -Math.floor(1 + Math.random() * 2_000_000_000)
       try {
          await db.transaction(async (tx) => {
@@ -69,20 +69,19 @@ async function editTodo(id, label, completed) {
          'UPDATE todo SET label = $1, completed = $2 WHERE id = $3',
          [cleanLabel, completed, id],
       )
+      // look for a current mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
-      // NOTE that row_id is a string, to accomodate all types of primary keys
       if (queued.rows[0]?.action === 'create') {
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
       } else if (queued.rows[0]?.action === 'update') {
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), queued.rows[0].seq])
       } else {
          await tx.query(
-         `INSERT INTO mutation_queue (table_name, action, row_id, payload)
-            VALUES ('todo', 'update', $1, $2::jsonb)`,
-         [String(id), JSON.stringify({ label: cleanLabel, completed })],
+            `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'update', $1, $2::jsonb)`,
+            [String(id), JSON.stringify({ label: cleanLabel, completed })],
          )
       }
    })
@@ -93,11 +92,11 @@ async function editTodo(id, label, completed) {
 async function deleteTodo(id) {
    await db.transaction(async (tx) => {
       await tx.query('DELETE FROM todo WHERE id = $1', [id])
+      // look for a current mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
-      // NOTE that row_id is a string, to accomodate all types of primary keys
       if (queued.rows[0]?.action === 'create') {
          await tx.query("DELETE FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1", [String(id)])
       } else {

@@ -16,7 +16,7 @@ export async function prepareLocalDB() {
       CREATE TABLE IF NOT EXISTS mutation_queue (
          seq SERIAL PRIMARY KEY,
          table_name TEXT NOT NULL,
-         action TEXT NOT NULL,
+         action TEXT NOT NULL CHECK (action IN ('create', 'update', 'delete')),
          row_id TEXT NOT NULL,
          payload JSONB,
          UNIQUE (table_name, row_id)

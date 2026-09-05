@@ -84,8 +84,8 @@ async function editTodo(id, label, completed) {
       } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
          // update existing mutation payload
          await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
-      } else {
-         throw new Error(`Cannot edit todo with pending ${existingMutation.action} mutation`)
+      } else if (existingMutation.action === 'delete') {
+         throw new Error(`Cannot edit todo with pending delete mutation`)
       }
    })
    await render()
@@ -118,8 +118,6 @@ async function deleteTodo(id) {
          )
       } else if (existingMutation.action === 'delete') {
          // a delete is already queued; no queue change is needed
-      } else {
-         throw new Error(`Cannot delete todo with pending ${existingMutation.action} mutation`)
       }
    })
    await render()

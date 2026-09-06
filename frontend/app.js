@@ -33,37 +33,24 @@ async function createTodo(event) {
    const label = input.value.trim()
    if (!label) return
 
-   await insertTodoWithUniqueLocalId(label)
+   await insertTodoLocally(label)
    input.value = ''
    await render()
    flushQueue()
 }
 
-// Each queued mutation keeps a stable idempotency key so retrying after a lost
-// response cannot apply the same server operation twice.
-
-
-async function insertTodoWithUniqueLocalId(label) {
-   const maxAttempts = 10
-   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      // the generated local id is negative so that it cannot conflict with server database ids
-      const id = -Math.floor(1 + Math.random() * 2_000_000_000)
-      try {
-         await db.transaction(async (tx) => {
-            await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
-            // NOTE that row_id is a string, to accomodate all types of primary keys
-            await tx.query(
-               `INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id, payload)
-               VALUES ($1, 'todo', 'create', $2, $3::jsonb)`,
-               [crypto.randomUUID(), String(id), JSON.stringify({ label, completed: false })],
-            )
-         })
-         return
-      } catch (error) {
-         if (error.code !== '23505' // unique constraint violation
-            || attempt === maxAttempts) throw error
-      }
-   }
+// The client-generated UUID is the permanent primary key, so retrying a create
+// cannot produce another server row and no temporary ID reconciliation is needed.
+async function insertTodoLocally(label) {
+   const id = crypto.randomUUID()
+   await db.transaction(async (tx) => {
+      await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
+      await tx.query(
+         `INSERT INTO mutation_queue (table_name, action, row_id, payload)
+          VALUES ('todo', 'create', $1, $2::jsonb)`,
+         [id, JSON.stringify({ label, completed: false })],
+      )
+   })
 }
 
 async function editTodo(id, label, completed) {
@@ -81,15 +68,15 @@ async function editTodo(id, label, completed) {
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action, status FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
-         [String(id)],
+         [id],
       )
       const existingMutation = queued.rows[0]
       if (!existingMutation) {
          // queue a new update mutation
          await tx.query(
-            `INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id, payload)
-            VALUES ($1, 'todo', 'update', $2, $3::jsonb)`,
-            [crypto.randomUUID(), String(id), JSON.stringify({ label: cleanLabel, completed })],
+            `INSERT INTO mutation_queue (table_name, action, row_id, payload)
+             VALUES ('todo', 'update', $1, $2::jsonb)`,
+            [id, JSON.stringify({ label: cleanLabel, completed })],
          )
       } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
          // update existing mutation payload
@@ -97,11 +84,9 @@ async function editTodo(id, label, completed) {
             `UPDATE mutation_queue
              SET payload = $1::jsonb,
                  status = 'pending',
-                 failure_reason = NULL,
-                 idempotency_key = CASE WHEN status = 'failed' AND action = 'create' THEN $2 ELSE idempotency_key END,
-                 request_payload = CASE WHEN status = 'failed' AND action = 'create' THEN NULL ELSE request_payload END
-             WHERE seq = $3`,
-            [JSON.stringify({ label: cleanLabel, completed }), crypto.randomUUID(), existingMutation.seq],
+                 failure_reason = NULL
+             WHERE seq = $2`,
+            [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq],
          )
       } else if (existingMutation.action === 'delete') {
          throw new Error(`Cannot edit todo with pending delete mutation`)
@@ -120,20 +105,17 @@ async function deleteTodo(id) {
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action, status FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
-         [String(id)],
+         [id],
       )
       const existingMutation = queued.rows[0]
       if (!existingMutation) {
          // queue a new delete mutation
          await tx.query(
-            "INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id) VALUES ($1, 'todo', 'delete', $2)",
-            [crypto.randomUUID(), String(id)],
+            "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
+            [id],
          )
-      } else if (existingMutation.action === 'create') {
-         // the row never reached the server, so cancel its pending create
-         await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [existingMutation.seq])
-      } else if (existingMutation.action === 'update') {
-         // replace the pending update with a delete
+      } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
+         // A create may already be in flight, so a delete must still reach the server.
          await tx.query(
             "UPDATE mutation_queue SET action = 'delete', payload = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
             [existingMutation.seq],
@@ -256,13 +238,13 @@ function startElectricSync() {
 async function applyRemoteSnapshot(remoteRows) {
    // `remoteRows` is a complete, up-to-date shape's table snapshot
    // update local database table
-   const remoteIds = remoteRows.map((row) => Number(row.id))
+   const remoteIds = remoteRows.map((row) => row.id)
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
-         const id = Number(row.id)
+         const id = row.id
          const queued = await tx.query(
             "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
-            [String(id)],
+            [id],
          )
          // if there is a pending mutation for this row, snapshot data is ignored
          if (queued.rows[0]) continue
@@ -277,8 +259,7 @@ async function applyRemoteSnapshot(remoteRows) {
       if (remoteIds.length) {
          await tx.query(`
             DELETE FROM todo
-            WHERE id > 0
-              AND NOT (id = ANY($1::int[]))
+            WHERE NOT (id = ANY($1::uuid[]))
               AND NOT EXISTS (
                  SELECT 1 FROM mutation_queue
                  WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
@@ -287,8 +268,7 @@ async function applyRemoteSnapshot(remoteRows) {
       } else {
          await tx.query(`
             DELETE FROM todo
-            WHERE id > 0
-              AND NOT EXISTS (
+            WHERE NOT EXISTS (
                  SELECT 1 FROM mutation_queue
                  WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
               )
@@ -343,47 +323,22 @@ const mutationHandlers = {
 }
 
 async function sendTodoMutation(mutation) {
-   const rowId = Number(mutation.row_id)
+   const rowId = mutation.row_id
    const payload = mutation.payload
 
    if (mutation.action === 'create') {
-      const request = await db.query(
-         `UPDATE mutation_queue
-          SET request_payload = COALESCE(request_payload, payload)
-          WHERE seq = $1
-          RETURNING idempotency_key, request_payload`,
-         [mutation.seq],
-      )
-      if (!request.rows[0]) return
-
       const serverTodo = await api('/api/todos', {
          method: 'POST',
-         headers: { 'idempotency-key': request.rows[0].idempotency_key },
-         body: JSON.stringify(request.rows[0].request_payload),
+         body: JSON.stringify({ id: rowId, ...payload }),
       })
       await db.transaction(async (tx) => {
-         const current = await tx.query('SELECT * FROM todo WHERE id = $1', [rowId])
          const stillQueued = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
-         await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
-
-         if (current.rows[0] && stillQueued.rows[0]) {
-            await tx.query(
-               `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
-                ON CONFLICT (id) DO UPDATE
-                SET label = excluded.label, completed = excluded.completed`,
-               [serverTodo.id, current.rows[0].label, current.rows[0].completed],
-            )
-            await tx.query(
-               "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb, request_payload = NULL WHERE seq = $3",
-               [String(serverTodo.id), JSON.stringify({ label: current.rows[0].label, completed: current.rows[0].completed }), mutation.seq],
-            )
-         } else {
+         const currentMutation = stillQueued.rows[0]
+         if (!currentMutation || currentMutation.action !== 'create') return
+         if (sameTodo(serverTodo, currentMutation.payload)) {
             await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
-            await tx.query('DELETE FROM todo WHERE id = $1', [serverTodo.id])
-            await tx.query(
-               "INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id) VALUES ($1, 'todo', 'delete', $2)",
-               [crypto.randomUUID(), String(serverTodo.id)],
-            )
+         } else {
+            await tx.query("UPDATE mutation_queue SET action = 'update' WHERE seq = $1", [mutation.seq])
          }
       })
    }
@@ -411,6 +366,10 @@ async function sendTodoMutation(mutation) {
       // defensive - should not happen
       throw new PermanentMutationError(`Unsupported todo mutation action: ${mutation.action}`)
    }
+}
+
+function sameTodo(todo, payload) {
+   return todo.label === payload.label && todo.completed === payload.completed
 }
 
 async function markMutationFailed(mutation, error) {

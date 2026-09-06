@@ -21,7 +21,7 @@ li.pending { opacity: .65; }
 li input[type='checkbox'] { width: 18px; height: 18px; accent-color: #35382f; }
 .todo-description { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .label { padding: 9px 2px; border-radius: 4px; outline: none; }
-.local-id { flex: none; color: #92958c; font-size: .75rem; font-variant-numeric: tabular-nums; }
+.local-id { min-width: 0; overflow: hidden; color: #92958c; font-size: .75rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .completed .label { color: #84877e; text-decoration: line-through; }
 .delete { color: #85877f; background: transparent; padding: 8px; font-size: 1.2rem; line-height: 1; }
 .delete:hover { color: #b23d31; }

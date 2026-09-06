@@ -80,7 +80,7 @@ async function editTodo(id, label, completed) {
       // update mutation queue
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
-         "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
+         "SELECT seq, action, status FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
       const existingMutation = queued.rows[0]
@@ -93,7 +93,16 @@ async function editTodo(id, label, completed) {
          )
       } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
          // update existing mutation payload
-         await tx.query('UPDATE mutation_queue SET payload = $1::jsonb WHERE seq = $2', [JSON.stringify({ label: cleanLabel, completed }), existingMutation.seq])
+         await tx.query(
+            `UPDATE mutation_queue
+             SET payload = $1::jsonb,
+                 status = 'pending',
+                 failure_reason = NULL,
+                 idempotency_key = CASE WHEN status = 'failed' AND action = 'create' THEN $2 ELSE idempotency_key END,
+                 request_payload = CASE WHEN status = 'failed' AND action = 'create' THEN NULL ELSE request_payload END
+             WHERE seq = $3`,
+            [JSON.stringify({ label: cleanLabel, completed }), crypto.randomUUID(), existingMutation.seq],
+         )
       } else if (existingMutation.action === 'delete') {
          throw new Error(`Cannot edit todo with pending delete mutation`)
       }
@@ -110,7 +119,7 @@ async function deleteTodo(id) {
       // update mutation queue
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
-         "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
+         "SELECT seq, action, status FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
          [String(id)],
       )
       const existingMutation = queued.rows[0]
@@ -126,7 +135,7 @@ async function deleteTodo(id) {
       } else if (existingMutation.action === 'update') {
          // replace the pending update with a delete
          await tx.query(
-            "UPDATE mutation_queue SET action = 'delete', payload = NULL WHERE seq = $1",
+            "UPDATE mutation_queue SET action = 'delete', payload = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
             [existingMutation.seq],
          )
       } else if (existingMutation.action === 'delete') {
@@ -304,10 +313,15 @@ async function flushQueueUnlocked() {
    flushing = true
    try {
       while (true) {
-         const { rows } = await db.query('SELECT * FROM mutation_queue ORDER BY seq LIMIT 1')
+         const { rows } = await db.query("SELECT * FROM mutation_queue WHERE status = 'pending' ORDER BY seq LIMIT 1")
          const mutation = rows[0]
          if (!mutation) break
-         await sendMutation(mutation)
+         try {
+            await sendMutation(mutation)
+         } catch (error) {
+            if (!isPermanentMutationError(error)) throw error
+            await markMutationFailed(mutation, error)
+         }
          await render()
       }
    } catch (error) {
@@ -320,7 +334,7 @@ async function flushQueueUnlocked() {
 
 async function sendMutation(mutation) {
    const handler = mutationHandlers[mutation.table_name]
-   if (!handler) throw new Error(`No mutation handler for table: ${mutation.table_name}`)
+   if (!handler) throw new PermanentMutationError(`No mutation handler for table: ${mutation.table_name}`)
    await handler(mutation)
 }
 
@@ -395,8 +409,25 @@ async function sendTodoMutation(mutation) {
 
    else {
       // defensive - should not happen
-      throw new Error(`Unsupported todo mutation action: ${mutation.action}`)
+      throw new PermanentMutationError(`Unsupported todo mutation action: ${mutation.action}`)
    }
+}
+
+async function markMutationFailed(mutation, error) {
+   await db.transaction(async (tx) => {
+      const current = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
+      if (!sameMutation(current.rows[0], mutation)) return
+      await tx.query(
+         "UPDATE mutation_queue SET status = 'failed', failure_reason = $1 WHERE seq = $2",
+         [error.message, mutation.seq],
+      )
+   })
+}
+
+function isPermanentMutationError(error) {
+   return error instanceof PermanentMutationError ||
+      error instanceof ApiError && error.status >= 400 && error.status < 500 &&
+      error.status !== 408 && error.status !== 425 && error.status !== 429
 }
 
 async function api(url, options, allowNotFound = false) {
@@ -406,11 +437,20 @@ async function api(url, options, allowNotFound = false) {
       headers: { 'content-type': 'application/json', ...options.headers },
    })
    if (!response.ok && !(allowNotFound && response.status === 404)) {
-      throw new Error(`API returned ${response.status}`)
+      throw new ApiError(response.status)
    }
    if (response.status === 204 || response.status === 404) return response
    return response.json()
 }
+
+class ApiError extends Error {
+   constructor(status) {
+      super(`API returned ${status}`)
+      this.status = status
+   }
+}
+
+class PermanentMutationError extends Error {}
 
 function sameMutation(a, b) {
    return a && a.table_name === b.table_name && a.action === b.action &&
@@ -418,9 +458,18 @@ function sameMutation(a, b) {
 }
 
 async function updateStatus() {
-   const { rows } = await db.query('SELECT count(*)::int AS count FROM mutation_queue')
-   const pending = rows[0].count
+   const { rows } = await db.query(`
+      SELECT
+         count(*) FILTER (WHERE status = 'pending')::int AS pending,
+         count(*) FILTER (WHERE status = 'failed')::int AS failed
+      FROM mutation_queue
+   `)
+   const { pending, failed } = rows[0]
    const online = navigator.onLine && syncConnected
    status.className = `status ${online ? 'online' : 'offline'}`
-   status.textContent = online ? (pending ? `Online · ${pending} pending` : 'Synced') : (pending ? `Offline · ${pending} pending` : 'Offline')
+   if (failed) {
+      status.textContent = `${online ? 'Online' : 'Offline'} · ${failed} failed${pending ? ` · ${pending} pending` : ''}`
+   } else {
+      status.textContent = online ? (pending ? `Online · ${pending} pending` : 'Synced') : (pending ? `Offline · ${pending} pending` : 'Offline')
+   }
 }

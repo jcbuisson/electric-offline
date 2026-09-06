@@ -21,6 +21,8 @@ export async function prepareLocalDB() {
          row_id TEXT NOT NULL,
          payload JSONB,
          request_payload JSONB,
+         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'failed')),
+         failure_reason TEXT,
          UNIQUE (table_name, row_id)
       );
    `)

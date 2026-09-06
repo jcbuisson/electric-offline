@@ -289,6 +289,17 @@ async function applyRemoteSnapshot(remoteRows) {
 }
 
 async function flushQueue() {
+   if (!navigator.onLine) return
+   if (navigator.locks) {
+      await navigator.locks.request('todo-mutation-queue', { ifAvailable: true }, async (lock) => {
+         if (lock) await flushQueueUnlocked()
+      })
+      return
+   }
+   await flushQueueUnlocked()
+}
+
+async function flushQueueUnlocked() {
    if (flushing || !navigator.onLine) return
    flushing = true
    try {
@@ -343,7 +354,9 @@ async function sendTodoMutation(mutation) {
 
          if (current.rows[0] && stillQueued.rows[0]) {
             await tx.query(
-               'INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)',
+               `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
+                ON CONFLICT (id) DO UPDATE
+                SET label = excluded.label, completed = excluded.completed`,
                [serverTodo.id, current.rows[0].label, current.rows[0].completed],
             )
             await tx.query(
@@ -352,6 +365,7 @@ async function sendTodoMutation(mutation) {
             )
          } else {
             await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+            await tx.query('DELETE FROM todo WHERE id = $1', [serverTodo.id])
             await tx.query(
                "INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id) VALUES ($1, 'todo', 'delete', $2)",
                [crypto.randomUUID(), String(serverTodo.id)],

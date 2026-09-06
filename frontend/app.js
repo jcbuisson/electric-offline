@@ -65,10 +65,13 @@ async function editTodo(id, label, completed) {
    if (!cleanLabel) return render()
 
    await db.transaction(async (tx) => {
+      // update local database
       await tx.query(
          'UPDATE todo SET label = $1, completed = $2 WHERE id = $3',
          [cleanLabel, completed, id],
       )
+
+      // update mutation queue
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
@@ -94,7 +97,10 @@ async function editTodo(id, label, completed) {
 
 async function deleteTodo(id) {
    await db.transaction(async (tx) => {
+      // update local database
       await tx.query('DELETE FROM todo WHERE id = $1', [id])
+
+      // update mutation queue
       // look for an existing (max 1) mutation relative to the same table and row_id
       const queued = await tx.query(
          "SELECT seq, action FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 ORDER BY seq LIMIT 1",
@@ -232,7 +238,8 @@ function startElectricSync() {
 }
 
 async function applyRemoteSnapshot(remoteRows) {
-   // Reconciles against a complete, up-to-date shape's table snapshot
+   // `remoteRows` is a complete, up-to-date shape's table snapshot
+   // update local database table
    const remoteIds = remoteRows.map((row) => Number(row.id))
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
@@ -241,8 +248,9 @@ async function applyRemoteSnapshot(remoteRows) {
             "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
             [String(id)],
          )
-         // pending queue entries protect local rows from being overwritten or deleted during snapshot reconciliation
+         // if there is a pending mutation for this row, snapshot data is ignored
          if (queued.rows[0]) continue
+
          await tx.query(
             `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
                ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,
@@ -257,8 +265,7 @@ async function applyRemoteSnapshot(remoteRows) {
               AND NOT (id = ANY($1::int[]))
               AND NOT EXISTS (
                  SELECT 1 FROM mutation_queue
-                 WHERE mutation_queue.table_name = 'todo'
-                   AND mutation_queue.row_id = todo.id::text
+                 WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
               )
          `, [remoteIds])
       } else {
@@ -267,8 +274,7 @@ async function applyRemoteSnapshot(remoteRows) {
             WHERE id > 0
               AND NOT EXISTS (
                  SELECT 1 FROM mutation_queue
-                 WHERE mutation_queue.table_name = 'todo'
-                   AND mutation_queue.row_id = todo.id::text
+                 WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
               )
          `)
       }

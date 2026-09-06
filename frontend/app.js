@@ -402,6 +402,7 @@ async function sendTodoMutation(mutation) {
 async function api(url, options, allowNotFound = false) {
    const response = await fetch(url, {
       ...options,
+      signal: options.signal ?? AbortSignal.timeout(15_000),
       headers: { 'content-type': 'application/json', ...options.headers },
    })
    if (!response.ok && !(allowNotFound && response.status === 404)) {

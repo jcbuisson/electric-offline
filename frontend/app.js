@@ -12,6 +12,7 @@ let syncConnected = false
 
 await prepareLocalDB()
 await render()
+
 form.addEventListener('submit', createTodo)
 window.addEventListener('online', () => {
    updateStatus()
@@ -38,6 +39,10 @@ async function createTodo(event) {
    flushQueue()
 }
 
+// Each queued mutation keeps a stable idempotency key so retrying after a lost
+// response cannot apply the same server operation twice.
+
+
 async function insertTodoWithUniqueLocalId(label) {
    const maxAttempts = 10
    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -48,8 +53,9 @@ async function insertTodoWithUniqueLocalId(label) {
             await tx.query('INSERT INTO todo (id, label, completed) VALUES ($1, $2, false)', [id, label])
             // NOTE that row_id is a string, to accomodate all types of primary keys
             await tx.query(
-               `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'create', $1, $2::jsonb)`,
-               [String(id), JSON.stringify({ label, completed: false })],
+               `INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id, payload)
+               VALUES ($1, 'todo', 'create', $2, $3::jsonb)`,
+               [crypto.randomUUID(), String(id), JSON.stringify({ label, completed: false })],
             )
          })
          return
@@ -81,8 +87,9 @@ async function editTodo(id, label, completed) {
       if (!existingMutation) {
          // queue a new update mutation
          await tx.query(
-            `INSERT INTO mutation_queue (table_name, action, row_id, payload) VALUES ('todo', 'update', $1, $2::jsonb)`,
-            [String(id), JSON.stringify({ label: cleanLabel, completed })],
+            `INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id, payload)
+            VALUES ($1, 'todo', 'update', $2, $3::jsonb)`,
+            [crypto.randomUUID(), String(id), JSON.stringify({ label: cleanLabel, completed })],
          )
       } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
          // update existing mutation payload
@@ -110,8 +117,8 @@ async function deleteTodo(id) {
       if (!existingMutation) {
          // queue a new delete mutation
          await tx.query(
-            "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
-            [String(id)],
+            "INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id) VALUES ($1, 'todo', 'delete', $2)",
+            [crypto.randomUUID(), String(id)],
          )
       } else if (existingMutation.action === 'create') {
          // the row never reached the server, so cancel its pending create
@@ -315,9 +322,19 @@ async function sendTodoMutation(mutation) {
    const payload = mutation.payload
 
    if (mutation.action === 'create') {
+      const request = await db.query(
+         `UPDATE mutation_queue
+          SET request_payload = COALESCE(request_payload, payload)
+          WHERE seq = $1
+          RETURNING idempotency_key, request_payload`,
+         [mutation.seq],
+      )
+      if (!request.rows[0]) return
+
       const serverTodo = await api('/api/todos', {
          method: 'POST',
-         body: JSON.stringify(payload),
+         headers: { 'idempotency-key': request.rows[0].idempotency_key },
+         body: JSON.stringify(request.rows[0].request_payload),
       })
       await db.transaction(async (tx) => {
          const current = await tx.query('SELECT * FROM todo WHERE id = $1', [rowId])
@@ -330,14 +347,14 @@ async function sendTodoMutation(mutation) {
                [serverTodo.id, current.rows[0].label, current.rows[0].completed],
             )
             await tx.query(
-               "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb WHERE seq = $3",
+               "UPDATE mutation_queue SET action = 'update', row_id = $1, payload = $2::jsonb, request_payload = NULL WHERE seq = $3",
                [String(serverTodo.id), JSON.stringify({ label: current.rows[0].label, completed: current.rows[0].completed }), mutation.seq],
             )
          } else {
             await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
             await tx.query(
-               "INSERT INTO mutation_queue (table_name, action, row_id) VALUES ('todo', 'delete', $1)",
-               [String(serverTodo.id)],
+               "INSERT INTO mutation_queue (idempotency_key, table_name, action, row_id) VALUES ($1, 'todo', 'delete', $2)",
+               [crypto.randomUUID(), String(serverTodo.id)],
             )
          }
       })

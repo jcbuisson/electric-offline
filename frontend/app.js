@@ -237,11 +237,12 @@ function startElectricSync() {
 
 async function applyRemoteSnapshot(remoteRows) {
    // `remoteRows` is a complete, up-to-date shape's table snapshot
-   // update local database table
+   // update local database table, and the mutation table
    const remoteIds = remoteRows.map((row) => row.id)
    await db.transaction(async (tx) => {
       for (const row of remoteRows) {
          const id = row.id
+         // look for a pending mutation for this row
          const queued = await tx.query(
             "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
             [id],
@@ -249,6 +250,7 @@ async function applyRemoteSnapshot(remoteRows) {
          // if there is a pending mutation for this row, snapshot data is ignored
          if (queued.rows[0]) continue
 
+         // otherwise, insert it locally
          await tx.query(
             `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
                ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,

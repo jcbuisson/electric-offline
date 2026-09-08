@@ -1,5 +1,11 @@
 # Offline todos
 
+A server-generated primary key could be used, but reconciliation with server data would have
+many edge-cases and be much more complex,
+A client-generated UUID is slighly less performant, but much simpler to manage
+
+
+
 A minimal vanilla-JavaScript todo app. The UI reads and writes PGlite in IndexedDB immediately, queues mutations while offline, sends them to a small Postgres API when connected, and receives Postgres changes through Electric.
 
 ## Run

@@ -1,8 +1,7 @@
 # Offline todos
 
-A server-generated primary key could be used, but reconciliation with server data would have
-many edge-cases and be much more complex,
-A client-generated UUID is slighly less performant, but much simpler to manage
+A server-generated primary key could be used, but a reliable reconciliation with server data would be much more complex.
+Using client-generated UUIDs is slighly less performant, but much simpler to manage
 
 
 

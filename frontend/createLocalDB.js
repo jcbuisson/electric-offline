@@ -23,5 +23,7 @@ export async function prepareLocalDB() {
          failure_reason TEXT,
          UNIQUE (table_name, row_id)
       );
+
+      ALTER TABLE mutation_queue ADD COLUMN IF NOT EXISTS acknowledged_version NUMERIC;
    `)
 }

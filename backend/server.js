@@ -20,6 +20,7 @@ app.post('/api/todos', async (request, response, next) => {
           RETURNING *`,
          [id, label, completed],
       )
+      response.set('X-Sync-Version', String(created.rows[0].version))
       response.status(201).json(created.rows[0])
    } catch (error) {
       next(error)
@@ -32,9 +33,14 @@ app.put('/api/todos/:id', async (request, response, next) => {
       const id = requireId(request.params.id)
       const label = requireLabel(request.body.label)
       const { rows } = await pool.query(
-         'UPDATE todo SET label = $1, completed = $2 WHERE id = $3 RETURNING *', [label, Boolean(request.body.completed), id],
+         "UPDATE todo SET label = $1, completed = $2, version = nextval('todo_version_seq') WHERE id = $3 AND NOT deleted RETURNING *", [label, Boolean(request.body.completed), id],
       )
-      if (!rows[0]) return response.sendStatus(404)
+      if (!rows[0]) {
+         const tombstone = await ensureTombstone(id)
+         response.set('X-Sync-Version', String(tombstone.version))
+         return response.sendStatus(404)
+      }
+      response.set('X-Sync-Version', String(rows[0].version))
       response.json(rows[0])
    } catch (error) {
       next(error)
@@ -44,8 +50,14 @@ app.put('/api/todos/:id', async (request, response, next) => {
 // DELETE
 app.delete('/api/todos/:id', async (request, response, next) => {
    try {
-      const result = await pool.query('DELETE FROM todo WHERE id = $1', [requireId(request.params.id)])
-      response.sendStatus(result.rowCount ? 204 : 404)
+      const { rows } = await pool.query(
+         `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)
+          ON CONFLICT (id) DO UPDATE SET deleted = true, version = nextval('todo_version_seq')
+          RETURNING version`,
+         [requireId(request.params.id)],
+      )
+      response.set('X-Sync-Version', String(rows[0].version))
+      response.sendStatus(204)
    } catch (error) {
       next(error)
    }
@@ -85,4 +97,15 @@ function requireLabel(value) {
 
 function badRequest(message) {
    return Object.assign(new Error(message), { status: 400 })
+}
+
+// Missing updates also need a durable deletion marker for Electric to confirm.
+// A concurrent create keeps its row; the original UPDATE still returns 404.
+async function ensureTombstone(id) {
+   const { rows } = await pool.query(
+      `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)
+       ON CONFLICT (id) DO UPDATE SET id = excluded.id RETURNING version`,
+      [id],
+   )
+   return rows[0]
 }

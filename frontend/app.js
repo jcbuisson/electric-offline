@@ -1,5 +1,8 @@
 import { Shape, ShapeStream } from '@electric-sql/client'
 import { db, prepareLocalDB } from './createLocalDB.js'
+import { createSnapshotSync } from './snapshotSync.js'
+
+const snapshotSync = createSnapshotSync(db)
 
 const list = document.querySelector('#todo-list')
 const empty = document.querySelector('#empty')
@@ -83,6 +86,8 @@ async function editTodo(id, label, completed) {
          await tx.query(
             `UPDATE mutation_queue
              SET payload = $1::jsonb,
+                 action = CASE WHEN acknowledged_version IS NOT NULL THEN 'update' ELSE action END,
+                 acknowledged_version = NULL,
                  status = 'pending',
                  failure_reason = NULL
              WHERE seq = $2`,
@@ -117,7 +122,7 @@ async function deleteTodo(id) {
       } else if (existingMutation.action === 'create' || existingMutation.action === 'update') {
          // A create may already be in flight, so a delete must still reach the server.
          await tx.query(
-            "UPDATE mutation_queue SET action = 'delete', payload = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
+            "UPDATE mutation_queue SET action = 'delete', payload = NULL, acknowledged_version = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
             [existingMutation.seq],
          )
       } else if (existingMutation.action === 'delete') {
@@ -200,8 +205,8 @@ function todoElement(todo) {
    1. A local change updates todo and adds a queue entry.
    2. flushQueue() sends that mutation to the API.
    3. A successful HTTP response acknowledges it.
-   4. sendTodoMutation() removes or transforms the queue entry.
-   5. Electric later delivers the resulting server state.
+   4. The queue entry retains the acknowledged server version and protects local state.
+   5. Electric catches up, atomically replacing local state and removing the entry.
 */
 
 function startElectricSync() {
@@ -214,17 +219,17 @@ function startElectricSync() {
    })
    const shape = new Shape(stream)
 
-   // Subscribe to shape's current dataset
    shape.subscribe(async ({ rows }) => {
       syncConnected = true
-      await applyRemoteSnapshot(rows)
+      await snapshotSync.apply(rows)
       await render()
    })
 
-   // Subscribe to raw Electric protocol messages: insert, update, delete, up-to-date, must-refetch, etc.
-   // Used here to update sync status
    stream.subscribe(
-      () => {
+      (messages) => {
+         if (messages.some((message) => message.headers.control === 'must-refetch')) {
+            snapshotSync.reset()
+         }
          syncConnected = stream.isConnected()
          updateStatus()
       },
@@ -233,50 +238,6 @@ function startElectricSync() {
          updateStatus()
       },
    )
-}
-
-async function applyRemoteSnapshot(remoteRows) {
-   // `remoteRows` is a complete, up-to-date shape's table snapshot
-   // update local database table, and the mutation table
-   const remoteIds = remoteRows.map((row) => row.id)
-   await db.transaction(async (tx) => {
-      for (const row of remoteRows) {
-         const id = row.id
-         // look for a pending mutation for this row
-         const queued = await tx.query(
-            "SELECT 1 FROM mutation_queue WHERE table_name = 'todo' AND row_id = $1 LIMIT 1",
-            [id],
-         )
-         // if there is a pending mutation for this row, snapshot data is ignored
-         if (queued.rows[0]) continue
-
-         // otherwise, insert it locally
-         await tx.query(
-            `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
-               ON CONFLICT (id) DO UPDATE SET label = excluded.label, completed = excluded.completed`,
-            [id, row.label, row.completed],
-         )
-      }
-
-      if (remoteIds.length) {
-         await tx.query(`
-            DELETE FROM todo
-            WHERE NOT (id = ANY($1::uuid[]))
-              AND NOT EXISTS (
-                 SELECT 1 FROM mutation_queue
-                 WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
-              )
-         `, [remoteIds])
-      } else {
-         await tx.query(`
-            DELETE FROM todo
-            WHERE NOT EXISTS (
-                 SELECT 1 FROM mutation_queue
-                 WHERE mutation_queue.table_name = 'todo' AND mutation_queue.row_id = todo.id::text
-              )
-         `)
-      }
-   })
 }
 
 async function flushQueue() {
@@ -295,7 +256,7 @@ async function flushQueueUnlocked() {
    flushing = true
    try {
       while (true) {
-         const { rows } = await db.query("SELECT * FROM mutation_queue WHERE status = 'pending' ORDER BY seq LIMIT 1")
+         const { rows } = await db.query("SELECT * FROM mutation_queue WHERE status = 'pending' AND acknowledged_version IS NULL ORDER BY seq LIMIT 1")
          const mutation = rows[0]
          if (!mutation) break
          try {
@@ -329,7 +290,7 @@ async function sendTodoMutation(mutation) {
    const payload = mutation.payload
 
    if (mutation.action === 'create') {
-      const serverTodo = await api('/api/todos', {
+      const { data: serverTodo, version } = await api('/api/todos', {
          method: 'POST',
          body: JSON.stringify({ id: rowId, ...payload }),
       })
@@ -337,8 +298,8 @@ async function sendTodoMutation(mutation) {
          const stillQueued = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          const currentMutation = stillQueued.rows[0]
          if (!currentMutation || currentMutation.action !== 'create') return
-         if (sameTodo(serverTodo, currentMutation.payload)) {
-            await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+         if (serverTodo.deleted || sameTodo(serverTodo, currentMutation.payload)) {
+            await tx.query('UPDATE mutation_queue SET acknowledged_version = $1 WHERE seq = $2', [version, mutation.seq])
          } else {
             await tx.query("UPDATE mutation_queue SET action = 'update' WHERE seq = $1", [mutation.seq])
          }
@@ -346,28 +307,30 @@ async function sendTodoMutation(mutation) {
    }
 
    else if (mutation.action === 'update') {
-      const response = await api(`/api/todos/${rowId}`, {
+      const { response, version } = await api(`/api/todos/${rowId}`, {
          method: 'PUT',
          body: JSON.stringify(payload),
       }, true)
       await db.transaction(async (tx) => {
          const current = await tx.query('SELECT * FROM mutation_queue WHERE seq = $1', [mutation.seq])
          if (sameMutation(current.rows[0], mutation)) {
-            await tx.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+            await tx.query('UPDATE mutation_queue SET acknowledged_version = $1 WHERE seq = $2', [version, mutation.seq])
          }
          if (response.status === 404) await tx.query('DELETE FROM todo WHERE id = $1', [rowId])
       })
    }
 
    else if (mutation.action === 'delete') {
-      await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
-      await db.query('DELETE FROM mutation_queue WHERE seq = $1', [mutation.seq])
+      const { version } = await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
+      await db.query('UPDATE mutation_queue SET acknowledged_version = $1 WHERE seq = $2', [version, mutation.seq])
    }
 
    else {
       // defensive - should not happen
       throw new PermanentMutationError(`Unsupported todo mutation action: ${mutation.action}`)
    }
+   // Electric may have reached this write before its HTTP response arrived.
+   await snapshotSync.reconcile()
 }
 
 function sameTodo(todo, payload) {
@@ -400,8 +363,10 @@ async function api(url, options, allowNotFound = false) {
    if (!response.ok && !(allowNotFound && response.status === 404)) {
       throw new ApiError(response.status)
    }
-   if (response.status === 204 || response.status === 404) return response
-   return response.json()
+   const version = response.headers.get('X-Sync-Version')
+   if (!version || !/^\d+$/.test(version)) throw new Error('API did not return a sync version')
+   const data = response.status === 204 || response.status === 404 ? null : await response.json()
+   return { response, data, version }
 }
 
 class ApiError extends Error {

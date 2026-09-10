@@ -200,14 +200,6 @@ function todoElement(todo) {
    return item
 }
 
-/*
-   The mutation lifecycle is:
-   1. A local change updates todo and adds a queue entry.
-   2. flushQueue() sends that mutation to the API.
-   3. A successful HTTP response acknowledges it.
-   4. The queue entry retains the acknowledged server version and protects local state.
-   5. Electric catches up, atomically replacing local state and removing the entry.
-*/
 
 function startElectricSync() {
    const stream = new ShapeStream({

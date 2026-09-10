@@ -217,27 +217,33 @@ function startElectricSync() {
          where: 'true',
       },
    })
-   const shape = new Shape(stream)
 
-   shape.subscribe(async ({ rows }) => {
-      syncConnected = true
-      await snapshotSync.apply(rows)
-      await render()
-   })
-
+   // individual row changes and control messages
    stream.subscribe(
       (messages) => {
+         // must-refetch is a message from Electric meaning: “Discard the old shape snapshot and fetch it again”
+         // This can happen when Electric invalidates a shape, for example after a schema change
          if (messages.some((message) => message.headers.control === 'must-refetch')) {
             snapshotSync.reset()
          }
          syncConnected = stream.isConnected()
          updateStatus()
       },
-      () => {
+      (error) => {
+         console.error('Electric sync error:', error)
          syncConnected = false
          updateStatus()
       },
    )
+
+   const shape = new Shape(stream)
+
+   // the accumulated remote dataset, maintained from stream.subscribe() messages
+   shape.subscribe(async ({ rows }) => {
+      syncConnected = true
+      await snapshotSync.apply(rows)
+      await render()
+   })
 }
 
 async function flushQueue() {

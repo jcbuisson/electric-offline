@@ -30,3 +30,20 @@ npm start
 ```
 
 Then open <http://localhost:3001>.
+
+## Sync confirmation
+
+Successful API responses leave mutations in the local queue until Electric delivers
+the acknowledged server version or a newer version of that row. These acknowledged
+mutations are not resent, and continue protecting local changes across reloads.
+
+Deletes retain an ID and version as a server-side tombstone (`deleted = true`), with
+the label cleared. Tombstones are synced but hidden from the todo list: an absent
+row in an older snapshot is not sufficient proof that a delete has arrived. Keep
+tombstones so clients that were offline can still confirm their writes. Use the API
+for mutations so updates advance the version and deletes produce tombstones.
+
+Schema additions are applied automatically when the API and client start. Restart
+the API and reload clients together when updating to this sync protocol.
+
+Run the sync regression checks with `npm test`.

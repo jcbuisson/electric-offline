@@ -110,7 +110,7 @@ test('editing during an in-flight request does not acknowledge the newer edit', 
    assert.equal((await queue())[0].acknowledged_version, null)
 })
 
-test('404 acknowledgement protects absence until Electric reaches the response position', async () => {
+test('404 acknowledgement protects absence until Electric reaches the acknowledged version', async () => {
    const mutation = await seed()
    fetchHandler = async () => new Response(null, { status: 404, headers: { 'X-Sync-Version': '200' } })
    await app.sendTodoMutation(mutation)
@@ -121,7 +121,7 @@ test('404 acknowledgement protects absence until Electric reaches the response p
    assert.equal((await queue()).length, 0)
 })
 
-test('must-refetch invalidates the cached snapshot and its position', async () => {
+test('must-refetch invalidates the cached snapshot', async () => {
    await sync.apply([remote('local', '300')])
    await db.exec('TRUNCATE todo')
    const mutation = await seed()
@@ -141,4 +141,37 @@ test('server versions retain precision above the JavaScript integer limit', asyn
    assert.equal((await queue()).length, 1)
    await sync.apply([remote('local', '9007199254740993')])
    assert.equal((await queue()).length, 0)
+})
+
+test('an absent row cannot acknowledge a delete without its versioned tombstone', async () => {
+   const mutation = await seed('delete')
+   fetchHandler = async () => new Response(null, { status: 204, headers: { 'X-Sync-Version': '200' } })
+   await app.sendTodoMutation(mutation)
+   await sync.apply([])
+   assert.equal((await queue()).length, 1)
+   await sync.apply([remote('old', '100')])
+   assert.deepEqual(await rows(), [])
+   await sync.apply([remote('', '200', true)])
+   assert.equal((await queue()).length, 0)
+})
+
+test('a create retry receiving a tombstone waits for that tombstone instead of recreating the row', async () => {
+   const mutation = await seed('create')
+   fetchHandler = async () => new Response(JSON.stringify(remote('', '200', true)), {
+      headers: { 'X-Sync-Version': '200' },
+   })
+   await app.sendTodoMutation(mutation)
+   assert.equal((await queue())[0].acknowledged_version, '200')
+   await sync.apply([remote('', '200', true)])
+   assert.deepEqual(await rows(), [])
+   assert.equal((await queue()).length, 0)
+})
+
+test('an API response without a version leaves the mutation retryable', async () => {
+   const mutation = await seed()
+   fetchHandler = async () => new Response(JSON.stringify(todo()))
+   await assert.rejects(app.sendTodoMutation(mutation), /sync version/)
+   assert.equal((await queue())[0].acknowledged_version, null)
+   await sync.apply([remote('old', '100')])
+   assert.deepEqual(await rows(), [todo()])
 })

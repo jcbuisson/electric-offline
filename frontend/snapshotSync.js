@@ -1,9 +1,25 @@
+
+// Local changes remain protected until Electric delivers the acknowledged server version or newer—even across reloads.
+// Deletes now retain hidden, versioned tombstones so stale snapshots cannot resurrect them.
+
+// Exemple:
+//    Event                                   Result
+//   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//    You change "Milk" to "Bread" locally    Local row becomes "Bread"; mutation is queued
+//   ──────────────────────────────────────  ────────────────────────────────────────────────
+//    API confirms server version 42          Queue entry gets acknowledged_version = 42
+//   ──────────────────────────────────────  ────────────────────────────────────────────────
+//    Electric sends old version 41           Queue entry stays; local "Bread" stays
+//   ──────────────────────────────────────  ────────────────────────────────────────────────
+//    Electric sends version 42               Queue entry is removed; remote data is applied
+
 // HTTP acknowledges durability; the replicated version acknowledges visibility.
 // Delete tombstones carry a version too, so absence alone never clears a guard.
 export function createSnapshotSync(db) {
    let latest = null
    let work = Promise.resolve()
 
+   // in-memory queue of functions; makes snapshot operations run one at a time, in the order they were requested
    function enqueue(task) {
       const result = work.then(task)
       work = result.catch(() => {})
@@ -48,13 +64,19 @@ export function createSnapshotSync(db) {
    }
 
    return {
+
+      // receive a new Electric snapshot
       apply(rows) {
          return enqueue(async () => {
             latest = rows
             await reconcile()
          })
       },
+
+      // Recheck the previously received snapshot
       reconcile: () => enqueue(reconcile),
+
+      // Forget the previous snapshot
       reset: () => enqueue(() => { latest = null }),
    }
 }

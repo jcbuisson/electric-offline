@@ -52,7 +52,8 @@ app.delete('/api/todos/:id', async (request, response, next) => {
    try {
       const { rows } = await pool.query(
          `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)
-          ON CONFLICT (id) DO UPDATE SET deleted = true, version = nextval('todo_version_seq')
+          ON CONFLICT (id) DO UPDATE SET label = '', completed = false,
+             deleted = true, version = nextval('todo_version_seq')
           RETURNING version`,
          [requireId(request.params.id)],
       )

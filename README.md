@@ -47,3 +47,13 @@ Schema additions are applied automatically when the API and client start. Restar
 the API and reload clients together when updating to this sync protocol.
 
 Run the sync regression checks with `npm test`.
+
+## Frontend structure
+
+- `app.js` initializes the database, connects the UI to the sync service, and starts the app.
+- `todoUI.js` handles DOM rendering, user events, and status text.
+- `todoSync.js` handles local reads and mutations, the HTTP queue, retries, and Electric subscriptions.
+- `snapshotSync.js` reconciles Electric snapshots while protecting unconfirmed local mutations.
+
+The UI calls the sync service's methods and subscribes to `todos` and `status`
+notifications. The sync service returns data and never accesses the DOM.

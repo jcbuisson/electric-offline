@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { PGlite } from '@electric-sql/pglite'
 import { createSnapshotSync } from '../frontend/snapshotSync.js'
+import { createTodoSync } from '../frontend/todoSync.js'
 
 const id = '11111111-1111-4111-8111-111111111111'
 const todo = (label = 'local') => ({ id, label, completed: false })
@@ -23,11 +24,11 @@ after(() => db.close())
 beforeEach(async () => {
    await db.exec('TRUNCATE todo, mutation_queue RESTART IDENTITY')
    sync = createSnapshotSync(db)
-   app = vm.createContext({ db, snapshotSync: sync, AbortSignal, console,
-      fetch: (...args) => fetchHandler(...args) })
-   const source = await readFile(new URL('../frontend/app.js', import.meta.url), 'utf8')
-   vm.runInContext(source.slice(source.indexOf('async function createTodo')) +
-      '\nrender = async () => {}; flushQueue = async () => {}; updateStatus = async () => {};', app)
+   app = createTodoSync(db, {
+      snapshotSync: sync,
+      fetchRequest: (...args) => fetchHandler(...args),
+      network: { onLine: true },
+   })
    fetchHandler = async () => new Response(JSON.stringify(todo()), {
       status: 200, headers: { 'X-Sync-Version': '200' },
    })
@@ -44,11 +45,11 @@ const rows = async () => (await db.query('SELECT * FROM todo')).rows
 
 for (const action of ['create', 'update', 'delete']) {
    test(`${action}: HTTP acknowledgement protects against lagging snapshots until Electric catches up`, async () => {
-      const mutation = await seed(action)
+      await seed(action)
       if (action === 'delete') fetchHandler = async () => new Response(null, {
          status: 204, headers: { 'X-Sync-Version': '200' },
       })
-      await app.sendTodoMutation(mutation)
+      await app.flushQueue()
       assert.equal((await queue())[0].acknowledged_version, '200')
       assert.equal((await db.query("SELECT * FROM mutation_queue WHERE status = 'pending' AND acknowledged_version IS NULL")).rows.length, 0)
       await sync.apply(action === 'create' ? [] : [remote('old', '100')])
@@ -61,16 +62,17 @@ for (const action of ['create', 'update', 'delete']) {
 }
 
 test('Electric arriving before HTTP acknowledgement is reconciled immediately afterwards', async () => {
-   const mutation = await seed()
+   await seed()
    await sync.apply([remote('newer remote edit', '300')])
    assert.deepEqual(await rows(), [todo()])
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    assert.deepEqual(await rows(), [todo('newer remote edit')])
    assert.equal((await queue()).length, 0)
 })
 
 test('acknowledgement survives a client restart and stale initial snapshot', async () => {
-   await app.sendTodoMutation(await seed('create'))
+   await seed('create')
+   await app.flushQueue()
    const restarted = createSnapshotSync(db)
    await restarted.apply([])
    assert.deepEqual(await rows(), [todo()])
@@ -79,7 +81,8 @@ test('acknowledgement survives a client restart and stale initial snapshot', asy
 })
 
 test('editing an acknowledged create queues an update and invalidates the old acknowledgement', async () => {
-   await app.sendTodoMutation(await seed('create'))
+   await seed('create')
+   await app.flushQueue()
    await app.editTodo(id, 'edited again', true)
    const [mutation] = await queue()
    assert.equal(mutation.action, 'update')
@@ -90,7 +93,8 @@ test('editing an acknowledged create queues an update and invalidates the old ac
 })
 
 test('deleting an acknowledged create remains protected from its incoming insert', async () => {
-   await app.sendTodoMutation(await seed('create'))
+   await seed('create')
+   await app.flushQueue()
    await app.deleteTodo(id)
    await sync.apply([remote('local', '300')])
    assert.deepEqual(await rows(), [])
@@ -99,21 +103,24 @@ test('deleting an acknowledged create remains protected from its incoming insert
 })
 
 test('editing during an in-flight request does not acknowledge the newer edit', async () => {
-   const mutation = await seed()
+   await seed()
+   let requests = 0
    fetchHandler = async () => {
+      // Leave the newer edit unsent after the first request finishes.
+      if (++requests > 1) throw new Error('Connection lost')
       await app.editTodo(id, 'edited in flight', true)
       return new Response(JSON.stringify(todo()), { headers: { 'X-Sync-Version': '200' } })
    }
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    await sync.apply([remote('local', '300')])
    assert.equal((await rows())[0].label, 'edited in flight')
    assert.equal((await queue())[0].acknowledged_version, null)
 })
 
 test('404 acknowledgement protects absence until Electric reaches the acknowledged version', async () => {
-   const mutation = await seed()
+   await seed()
    fetchHandler = async () => new Response(null, { status: 404, headers: { 'X-Sync-Version': '200' } })
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    await sync.apply([remote('old', '100')])
    assert.deepEqual(await rows(), [])
    assert.equal((await queue()).length, 1)
@@ -124,9 +131,9 @@ test('404 acknowledgement protects absence until Electric reaches the acknowledg
 test('must-refetch invalidates the cached snapshot', async () => {
    await sync.apply([remote('local', '300')])
    await db.exec('TRUNCATE todo')
-   const mutation = await seed()
+   await seed()
    await sync.reset()
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    await sync.apply([todo('old')])
    assert.deepEqual(await rows(), [todo()])
    assert.equal((await queue()).length, 1)
@@ -144,9 +151,9 @@ test('server versions retain precision above the JavaScript integer limit', asyn
 })
 
 test('an absent row cannot acknowledge a delete without its versioned tombstone', async () => {
-   const mutation = await seed('delete')
+   await seed('delete')
    fetchHandler = async () => new Response(null, { status: 204, headers: { 'X-Sync-Version': '200' } })
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    await sync.apply([])
    assert.equal((await queue()).length, 1)
    await sync.apply([remote('old', '100')])
@@ -156,11 +163,11 @@ test('an absent row cannot acknowledge a delete without its versioned tombstone'
 })
 
 test('a create retry receiving a tombstone waits for that tombstone instead of recreating the row', async () => {
-   const mutation = await seed('create')
+   await seed('create')
    fetchHandler = async () => new Response(JSON.stringify(remote('', '200', true)), {
       headers: { 'X-Sync-Version': '200' },
    })
-   await app.sendTodoMutation(mutation)
+   await app.flushQueue()
    assert.equal((await queue())[0].acknowledged_version, '200')
    await sync.apply([remote('', '200', true)])
    assert.deepEqual(await rows(), [])
@@ -168,10 +175,39 @@ test('a create retry receiving a tombstone waits for that tombstone instead of r
 })
 
 test('an API response without a version leaves the mutation retryable', async () => {
-   const mutation = await seed()
+   await seed()
    fetchHandler = async () => new Response(JSON.stringify(todo()))
-   await assert.rejects(app.sendTodoMutation(mutation), /sync version/)
+   await app.flushQueue()
    assert.equal((await queue())[0].acknowledged_version, null)
    await sync.apply([remote('old', '100')])
    assert.deepEqual(await rows(), [todo()])
+})
+
+test('the service supports offline CRUD and change notifications without a UI', async () => {
+   const changes = []
+   const offline = createTodoSync(db, { network: { onLine: false } })
+   const unsubscribe = offline.subscribe((change) => changes.push(change))
+   const createdId = await offline.createTodo('Offline todo')
+   assert.deepEqual(await offline.getTodos(), [{ id: createdId, label: 'Offline todo', completed: false, pending: true }])
+   assert.deepEqual(await offline.getStatus(), { online: false, pending: 1, failed: 0 })
+   await offline.editTodo(createdId, 'Edited offline', true)
+   assert.equal((await offline.getTodos())[0].label, 'Edited offline')
+   await offline.deleteTodo(createdId)
+   assert.deepEqual(await offline.getTodos(), [])
+   assert.deepEqual(changes, ['todos', 'todos', 'todos'])
+   unsubscribe()
+   await offline.createTodo('No listener')
+   assert.equal(changes.length, 3)
+})
+
+test('queue processing notifies subscribers and exposes failure counts as data', async () => {
+   await seed()
+   const changes = []
+   app.subscribe((change) => changes.push(change))
+   fetchHandler = async () => new Response(null, { status: 400 })
+   await app.flushQueue()
+   assert.deepEqual(await app.getStatus(), { online: false, pending: 0, failed: 1 })
+   assert(changes.includes('todos'))
+   assert(changes.includes('status'))
+   assert.equal((await app.getTodos())[0].pending, true)
 })

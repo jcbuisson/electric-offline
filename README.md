@@ -1,11 +1,31 @@
 # Offline todos
 
+A minimal vanilla-JavaScript todo app. The UI reads and writes PGlite in IndexedDB immediately, queues mutations while offline,
+sends them to a small Postgres API when connected, and receives Postgres changes through Electric.
+
+
+## uid's or server-generated id's?
 A server-generated primary key could be used, but a reliable reconciliation with server data would be much more complex.
 Using client-generated UUIDs is slighly less performant, but much simpler to manage
 
+## data versions
+X-Sync-Version is a custom HTTP response header which tells the client which server version corresponds to its mutation.
 
+For example, after an edit, the API returns:
+  HTTP/1.1 200 OK
+  X-Sync-Version: 42
 
-A minimal vanilla-JavaScript todo app. The UI reads and writes PGlite in IndexedDB immediately, queues mutations while offline, sends them to a small Postgres API when connected, and receives Postgres changes through Electric.
+The sync code reads it:
+  const version = response.headers.get('X-Sync-Version')
+
+Then it stores 42 in the mutation queue’s acknowledged_version.
+The local change stays protected until Electric delivers that row with:
+  row.version >= acknowledged_version
+
+At that point, the mutation can leave the queue and the remote row can be applied locally.
+The header also works for DELETE responses with status 204, which have no response body. Electric delivers the
+row’s version separately through its stream; Electric does not read this header.
+
 
 ## Run
 

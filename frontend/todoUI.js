@@ -1,4 +1,5 @@
 // Renders todos and handles user interaction. Persistence and sync live in todoSync.js.
+
 export async function createTodoUI(todos) {
    const list = document.querySelector('#todo-list')
    const empty = document.querySelector('#empty')

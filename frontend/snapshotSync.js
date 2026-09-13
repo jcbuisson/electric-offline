@@ -17,7 +17,7 @@
 // Example:
 //    Event                                   Result
 //   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-//    You change "Milk" to "Bread" locally    Local row becomes "Bread"; mutation is queued
+//    User change "Milk" to "Bread" locally   Local row becomes "Bread"; mutation is queued
 //   ──────────────────────────────────────  ────────────────────────────────────────────────
 //    API confirms server version 42          Queue entry gets acknowledged_version = 42
 //   ──────────────────────────────────────  ────────────────────────────────────────────────

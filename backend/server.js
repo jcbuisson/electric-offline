@@ -2,10 +2,10 @@ import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServerDB, pool } from './createServerDB.js'
+import { runTodoMutation } from './todoMutations.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3001)
-
 app.use(express.json())
 
 const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist')
@@ -29,62 +29,37 @@ async function start() {
 }
 
 
-// CREATE
-app.post('/api/todos', async (request, response, next) => {
-   try {
-      const id = requireId(request.body.id)
-      const label = requireLabel(request.body.label)
-      const completed = Boolean(request.body.completed)
-      const created = await pool.query(
-         `INSERT INTO todo (id, label, completed) VALUES ($1, $2, $3)
-          ON CONFLICT (id) DO UPDATE SET id = excluded.id
-          RETURNING *`,
-         [id, label, completed],
-      )
-      response.set('X-Sync-Version', String(created.rows[0].version))
-      response.status(201).json(created.rows[0])
-   } catch (error) {
-      next(error)
-   }
-})
+app.post('/api/todos', handleMutation('create'))
+app.put('/api/todos/:id', handleMutation('update'))
+app.delete('/api/todos/:id', handleMutation('delete'))
 
-// UPDATE
-app.put('/api/todos/:id', async (request, response, next) => {
-   try {
-      const id = requireId(request.params.id)
-      const label = requireLabel(request.body.label)
-      const { rows } = await pool.query(
-         "UPDATE todo SET label = $1, completed = $2, version = nextval('todo_version_seq') WHERE id = $3 AND NOT deleted RETURNING *", [label, Boolean(request.body.completed), id],
-      )
-      if (!rows[0]) {
-         const tombstone = await ensureTombstone(id)
-         response.set('X-Sync-Version', String(tombstone.version))
-         return response.sendStatus(404)
+function handleMutation(action) {
+   return async (request, response, next) => {
+      try {
+         const result = await runTodoMutation(pool, {
+            clientId: requireId(request.get('X-Sync-Client')),
+            revision: requireRevision(request.get('X-Mutation-Revision')),
+            id: requireId(action === 'create' ? request.body.id : request.params.id),
+            action,
+            label: action === 'delete' ? undefined : requireLabel(request.body.label),
+            completed: Boolean(request.body?.completed),
+         })
+         response.set('X-Sync-Version', String(result.todo.version))
+         if (result.status === 204 || result.status === 404) return response.sendStatus(result.status)
+         response.status(result.status).json(result.todo)
+      } catch (error) {
+         next(error)
       }
-      response.set('X-Sync-Version', String(rows[0].version))
-      response.json(rows[0])
-   } catch (error) {
-      next(error)
    }
-})
+}
 
-// DELETE
-app.delete('/api/todos/:id', async (request, response, next) => {
-   try {
-      const { rows } = await pool.query(
-         `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)
-          ON CONFLICT (id) DO UPDATE SET label = '', completed = false,
-             deleted = true, version = nextval('todo_version_seq')
-          RETURNING version`,
-         [requireId(request.params.id)],
-      )
-      response.set('X-Sync-Version', String(rows[0].version))
-      response.sendStatus(204)
-   } catch (error) {
-      next(error)
+
+function requireRevision(value) {
+   if (!value || !/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > 9223372036854775807n) {
+      throw badRequest('Invalid mutation revision')
    }
-})
-
+   return value
+}
 
 function requireId(value) {
    if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
@@ -100,15 +75,4 @@ function requireLabel(value) {
 
 function badRequest(message) {
    return Object.assign(new Error(message), { status: 400 })
-}
-
-// If the ID is missing: creates a tombstone with deleted = true. The database assigns a version automatically.
-// If the ID already exists: preserves its data and returns its existing version.
-async function ensureTombstone(id) {
-   const { rows } = await pool.query(
-      `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)
-       ON CONFLICT (id) DO UPDATE SET id = excluded.id RETURNING version`,
-      [id],
-   )
-   return rows[0]
 }

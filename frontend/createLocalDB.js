@@ -7,6 +7,13 @@ export async function prepareLocalDB() {
    // there is at most one mutation per (table, row_id)
 
    await db.exec(`
+      CREATE SEQUENCE IF NOT EXISTS mutation_revision_seq;
+      CREATE TABLE IF NOT EXISTS sync_client (
+         singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+         id UUID NOT NULL DEFAULT gen_random_uuid()
+      );
+      INSERT INTO sync_client (singleton) VALUES (true) ON CONFLICT DO NOTHING;
+
       CREATE TABLE IF NOT EXISTS todo (
          id UUID PRIMARY KEY,
          label TEXT NOT NULL,
@@ -25,5 +32,6 @@ export async function prepareLocalDB() {
       );
 
       ALTER TABLE mutation_queue ADD COLUMN IF NOT EXISTS acknowledged_version NUMERIC;
+      ALTER TABLE mutation_queue ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT nextval('mutation_revision_seq');
    `)
 }

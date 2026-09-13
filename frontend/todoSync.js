@@ -15,6 +15,11 @@ import { createSnapshotSync } from './snapshotSync.js'
 // against older Electric snapshots. For a deletion, Electric sends a tombstone
 // (a server row with deleted = true and a version), which is hidden from the UI.
 //
+// Each local change also has a revision, separate from the server's version.
+// Revisions order requests from this client; versions confirm delivery by Electric.
+// Client identity and revision numbers survive reloads in PGlite. Retrying sends
+// the same revision, so a delayed request cannot overwrite a newer local change.
+//
 // db is the local PGlite database. The optional dependencies below normally use
 // browser objects, but tests can supply an isolated database and fake network.
 export function createTodoSync(db, {
@@ -139,6 +144,7 @@ export function createTodoSync(db, {
                `UPDATE mutation_queue
                 SET payload = $1::jsonb,
                     action = CASE WHEN acknowledged_version IS NOT NULL THEN 'update' ELSE action END,
+                    revision = nextval('mutation_revision_seq'),
                     acknowledged_version = NULL,
                     status = 'pending',
                     failure_reason = NULL
@@ -176,7 +182,7 @@ export function createTodoSync(db, {
             // Do not simply cancel a queued create: its HTTP request may already
             // be running or may have succeeded before a connection failure.
             await tx.query(
-               "UPDATE mutation_queue SET action = 'delete', payload = NULL, acknowledged_version = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
+               "UPDATE mutation_queue SET action = 'delete', revision = nextval('mutation_revision_seq'), payload = NULL, acknowledged_version = NULL, status = 'pending', failure_reason = NULL WHERE seq = $1",
                [existingMutation.seq],
             )
          } else if (existingMutation.action === 'delete') {
@@ -307,10 +313,18 @@ export function createTodoSync(db, {
    async function sendTodoMutation(mutation) {
       const rowId = mutation.row_id
       const payload = mutation.payload
+      // A retry keeps its revision; each new local change gets a larger one.
+      // The server uses these headers to ignore a late request after a newer write.
+      const { rows: clients } = await db.query('SELECT id FROM sync_client WHERE singleton = true')
+      const headers = {
+         'X-Sync-Client': clients[0].id,
+         'X-Mutation-Revision': String(mutation.revision),
+      }
 
       if (mutation.action === 'create') {
          const { data: serverTodo, version } = await api('/api/todos', {
             method: 'POST',
+            headers,
             body: JSON.stringify({ id: rowId, ...payload }),
          })
          await db.transaction(async (tx) => {
@@ -325,7 +339,8 @@ export function createTodoSync(db, {
             } else {
                // The server row differs from our current desired values (for example,
                // the user edited during POST). Send those values in a following PUT.
-               await tx.query("UPDATE mutation_queue SET action = 'update' WHERE seq = $1", [mutation.seq])
+               // This is a different request, so it must get a new revision too.
+               await tx.query("UPDATE mutation_queue SET action = 'update', revision = nextval('mutation_revision_seq') WHERE seq = $1", [mutation.seq])
             }
          })
       }
@@ -333,6 +348,7 @@ export function createTodoSync(db, {
       else if (mutation.action === 'update') {
          const { response, version } = await api(`/api/todos/${rowId}`, {
             method: 'PUT',
+            headers,
             body: JSON.stringify(payload),
          }, true)
          await db.transaction(async (tx) => {
@@ -350,7 +366,7 @@ export function createTodoSync(db, {
       else if (mutation.action === 'delete') {
          // Keep the queue entry after HTTP success so an old snapshot cannot restore
          // the deleted todo. The replicated tombstone will release this guard.
-         const { version } = await api(`/api/todos/${rowId}`, { method: 'DELETE' }, true)
+         const { version } = await api(`/api/todos/${rowId}`, { method: 'DELETE', headers }, true)
          await db.query('UPDATE mutation_queue SET acknowledged_version = $1 WHERE seq = $2', [version, mutation.seq])
       }
 
@@ -419,7 +435,7 @@ export function createTodoSync(db, {
    // Compare the request contents, not status/acknowledgement metadata.
    function sameMutation(a, b) {
       return a && a.table_name === b.table_name && a.action === b.action &&
-         a.row_id === b.row_id && JSON.stringify(a.payload) === JSON.stringify(b.payload)
+         a.row_id === b.row_id && String(a.revision) === String(b.revision) && JSON.stringify(a.payload) === JSON.stringify(b.payload)
    }
 
    // Return data for the UI to format. Pending includes acknowledged writes still

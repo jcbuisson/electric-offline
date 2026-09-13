@@ -68,6 +68,18 @@ the API and reload clients together when updating to this sync protocol.
 
 Run the sync regression checks with `npm test`.
 
+Each client also persists an identity and a monotonically increasing mutation
+revision. Requests send `X-Sync-Client` and `X-Mutation-Revision`; retries reuse the
+revision, while a new local change gets a newer one. The server locks a record in
+`todo_mutation_cursor` and commits the todo change and its receipt together. Older
+requests are ignored and duplicate requests replay their saved response, so a
+timed-out PUT cannot finish late and overwrite a newer edit from that client.
+Keep these records to protect against delayed retries. This does not resolve
+conflicting new edits from different clients.
+
+The new request headers are required: restart the API and reload clients together.
+Both database initializers migrate existing tables and queued mutations automatically.
+
 ## Frontend structure
 
 - `app.js` initializes the database, connects the UI to the sync service, and starts the app.

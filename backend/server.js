@@ -8,6 +8,27 @@ const port = Number(process.env.PORT || 3001)
 
 app.use(express.json())
 
+const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist')
+app.use(express.static(dist))
+app.get('*path', (_request, response) => response.sendFile(path.join(dist, 'index.html')))
+
+app.use((error, _request, response, _next) => {
+   console.error(error)
+   const status = error.status || 500
+   response.status(status).json({ error: status === 500 ? 'Database request failed' : error.message })
+})
+
+start().catch((error) => {
+   console.error('Failed to start Todo API:', error)
+   process.exitCode = 1
+})
+
+async function start() {
+   await createServerDB()
+   app.listen(port, () => console.log(`Todo API listening on http://localhost:${port}`))
+}
+
+
 // CREATE
 app.post('/api/todos', async (request, response, next) => {
    try {
@@ -64,25 +85,6 @@ app.delete('/api/todos/:id', async (request, response, next) => {
    }
 })
 
-const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist')
-app.use(express.static(dist))
-app.get('*path', (_request, response) => response.sendFile(path.join(dist, 'index.html')))
-
-app.use((error, _request, response, _next) => {
-   console.error(error)
-   const status = error.status || 500
-   response.status(status).json({ error: status === 500 ? 'Database request failed' : error.message })
-})
-
-start().catch((error) => {
-   console.error('Failed to start Todo API:', error)
-   process.exitCode = 1
-})
-
-async function start() {
-   await createServerDB()
-   app.listen(port, () => console.log(`Todo API listening on http://localhost:${port}`))
-}
 
 function requireId(value) {
    if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
@@ -100,8 +102,8 @@ function badRequest(message) {
    return Object.assign(new Error(message), { status: 400 })
 }
 
-// Missing updates also need a durable deletion marker for Electric to confirm.
-// A concurrent create keeps its row; the original UPDATE still returns 404.
+// If the ID is missing: creates a tombstone with deleted = true. The database assigns a version automatically.
+// If the ID already exists: preserves its data and returns its existing version.
 async function ensureTombstone(id) {
    const { rows } = await pool.query(
       `INSERT INTO todo (id, label, deleted) VALUES ($1, '', true)

@@ -1,4 +1,5 @@
 import { Shape, ShapeStream } from '@electric-sql/client'
+import { LeaderChangedError } from '@electric-sql/pglite/worker'
 import { createSnapshotSync } from './snapshotSync.js'
 
 // This service connects three places: the UI, local PGlite, and the server.
@@ -27,6 +28,8 @@ export function createTodoSync(db, {
    fetchRequest = (...args) => fetch(...args),
    network = globalThis.navigator,
    events = globalThis.window,
+   channel,
+   ownsSync = true, // Tabs edit shared data; only the database worker runs network sync.
    shapeUrl = 'http://localhost:3200/v1/shape',
 } = {}) {
    // These flags belong to this service instance; the mutation queue is in PGlite.
@@ -46,20 +49,33 @@ export function createTodoSync(db, {
    }
 
    // Send an event name, not DOM elements or formatted text. Listeners decide how to react.
-   function notify(change) {
+   function notify(change, broadcast = true) {
+      if (broadcast) channel?.postMessage({ change, connected: ownsSync ? syncConnected : undefined })
       for (const listener of listeners) {
          // Rendering errors must not affect mutation acknowledgement or retries.
          Promise.resolve().then(() => listener(change)).catch(console.error)
       }
    }
 
+   function handleSharedChange({ data }) {
+      if (!ownsSync && data.connected !== undefined) syncConnected = data.connected
+      notify(data.change, false)
+      // A tab committed an edit to our database. Upload it immediately.
+      if (ownsSync) void flushQueue()
+   }
+
    // Start receiving Electric data and sending local mutations. Repeated calls do nothing.
    function start() {
       if (started) return
       started = true
-      streamController = new AbortController()
+      channel?.addEventListener('message', handleSharedChange)
       events.addEventListener('online', handleOnline)
       events.addEventListener('offline', handleOffline)
+      if (!ownsSync) {
+         channel?.postMessage({ change: 'todos' })
+         return
+      }
+      streamController = new AbortController()
       startElectricSync()
       // `void` starts the async flush without waiting for it here.
       void flushQueue()
@@ -72,10 +88,11 @@ export function createTodoSync(db, {
    function stop() {
       if (!started) return
       started = false
+      channel?.removeEventListener('message', handleSharedChange)
       clearInterval(retryTimer)
       events.removeEventListener('online', handleOnline)
       events.removeEventListener('offline', handleOffline)
-      streamController.abort()
+      streamController?.abort()
       syncConnected = false
       notify('status')
    }
@@ -104,7 +121,7 @@ export function createTodoSync(db, {
          )
       })
       notify('todos')
-      if (started) void flushQueue()
+      if (started && ownsSync) void flushQueue()
       return id
    }
 
@@ -157,7 +174,7 @@ export function createTodoSync(db, {
          }
       })
       notify('todos')
-      if (started) void flushQueue()
+      if (started && ownsSync) void flushQueue()
    }
 
    // Remove the visible local row, but keep a queued delete until Electric confirms it.
@@ -190,13 +207,26 @@ export function createTodoSync(db, {
          }
       })
       notify('todos')
-      if (started) void flushQueue()
+      if (started && ownsSync) void flushQueue()
+   }
+
+   // A leader can close during a UI read. Wait for the replacement and repeat
+   // these SELECTs safely. Never blindly replay writes: a lost reply may hide a commit.
+   async function readLocal(sql) {
+      while (true) {
+         try {
+            await db.waitReady
+            return await db.query(sql)
+         } catch (error) {
+            if (!(error instanceof LeaderChangedError)) throw error
+         }
+      }
    }
 
    async function getTodos() {
       // Read only local data. `pending` means ANY queue entry still protects the row,
       // including failed entries and acknowledged entries waiting for Electric.
-      const { rows } = await db.query(`
+      const { rows } = await readLocal(`
          SELECT todo.*,
             EXISTS (
                SELECT 1 FROM mutation_queue
@@ -255,7 +285,7 @@ export function createTodoSync(db, {
 
    // Send eligible mutations. Offline calls leave them stored for a later attempt.
    async function flushQueue() {
-      if (!network.onLine) return
+      if (!ownsSync || !network.onLine) return
       // When Web Locks are available, only one cooperating tab can flush at a time.
       // ifAvailable skips this attempt instead of waiting behind another tab.
       if (network.locks) {
@@ -441,7 +471,7 @@ export function createTodoSync(db, {
    // Return data for the UI to format. Pending includes acknowledged writes still
    // waiting for Electric; an empty HTTP send queue does not necessarily mean synced.
    async function getStatus() {
-      const { rows } = await db.query(`
+      const { rows } = await readLocal(`
          SELECT
             count(*) FILTER (WHERE status = 'pending')::int AS pending,
             count(*) FILTER (WHERE status = 'failed')::int AS failed

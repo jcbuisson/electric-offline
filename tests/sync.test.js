@@ -14,11 +14,11 @@ let sync, app, fetchHandler
 
 before(async () => {
    // Run the actual schema initializer against an isolated in-memory database.
-   const source = await readFile(new URL('../frontend/createLocalDB.js', import.meta.url), 'utf8')
+   const source = await readFile(new URL('../frontend/localSchema.js', import.meta.url), 'utf8')
    const schema = vm.createContext({ db })
    vm.runInContext(source.slice(source.indexOf('export async')).replace('export ', ''), schema)
-   await schema.prepareLocalDB()
-   await schema.prepareLocalDB() // Existing databases must also migrate safely.
+   await schema.prepareLocalDB(db)
+   await schema.prepareLocalDB(db) // Existing databases must also migrate safely.
 })
 after(() => db.close())
 beforeEach(async () => {

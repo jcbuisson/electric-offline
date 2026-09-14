@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'offline-todos-'
-// Added a versioned offline-todos-v2 cache.
-const CACHE = `${CACHE_PREFIX}v2`
+// New worker-based client assets must replace the previous app cache.
+const CACHE = `${CACHE_PREFIX}v3`
 const CACHEABLE_DESTINATIONS = new Set(['script', 'style', 'image', 'font', 'worker', 'manifest'])
 
 self.addEventListener('install', (event) => {

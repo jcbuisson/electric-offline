@@ -82,6 +82,9 @@ Both database initializers migrate existing tables and queued mutations automati
 
 ## Frontend structure
 
+- `createLocalDB.js` connects each tab to PGliteWorker using the existing `idb://todo` storage.
+- `databaseWorker.js` preloads database assets and opens PGlite only when elected leader. It also owns Electric and HTTP uploads.
+- `localSchema.js` initializes/migrates the shared database before it becomes available.
 - `app.js` initializes the database, connects the UI to the sync service, and starts the app.
 - `todoUI.js` handles DOM rendering, user events, and status text.
 - `todoSync.js` handles local reads and mutations, the HTTP queue, retries, and Electric subscriptions.
@@ -89,3 +92,20 @@ Both database initializers migrate existing tables and queued mutations automati
 
 The UI calls the sync service's methods and subscribes to `todos` and `status`
 notifications. The sync service returns data and never accesses the DOM.
+
+## Multiple tabs
+
+Tabs share one PGlite database, client identity, and mutation queue through
+PGliteWorker. Only the elected worker runs Electric and sends mutations. Tabs use
+BroadcastChannel to announce committed edits and receive updates to todos and sync
+status. Closing the owning tab elects a replacement automatically. Every open
+worker preloads the database assets so takeover also works while offline.
+
+The storage name stays `idb://todo`, preserving existing data. When upgrading from
+the old implementation, close all old app tabs before opening the updated app:
+old tabs do not participate in the worker election.
+
+Run `npx playwright install chromium` once, then `npm run test:browser` to check
+shared offline edits, a single Electric owner, offline takeover, reconnecting, and
+persistence after reload. The browser test mocks remote servers and uses isolated
+browser storage; it does not modify your todos.

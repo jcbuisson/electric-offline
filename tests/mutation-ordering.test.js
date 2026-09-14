@@ -13,10 +13,10 @@ const id = '11111111-1111-4111-8111-111111111111'
 let sync, service, requestHandler, prepareLocal
 
 before(async () => {
-   const localSource = await readFile(new URL('../frontend/createLocalDB.js', import.meta.url), 'utf8')
+   const localSource = await readFile(new URL('../frontend/localSchema.js', import.meta.url), 'utf8')
    const localContext = vm.createContext({ db: local })
    vm.runInContext(localSource.slice(localSource.indexOf('export async')).replace('export ', ''), localContext)
-   prepareLocal = localContext.prepareLocalDB
+   prepareLocal = () => localContext.prepareLocalDB(local)
    await prepareLocal()
    const serverSource = await readFile(new URL('../backend/createServerDB.js', import.meta.url), 'utf8')
    const serverContext = vm.createContext({ pool: { query: (sql) => server.exec(sql) } })

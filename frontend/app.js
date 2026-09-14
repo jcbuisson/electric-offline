@@ -3,7 +3,7 @@ import { createTodoSync } from './todoSync.js'
 import { createTodoUI } from './todoUI.js'
 
 await prepareLocalDB()
-const todos = createTodoSync(db)
+const todos = createTodoSync(db, { ownsSync: false, channel: new BroadcastChannel('offline-todos-events') })
 await createTodoUI(todos)
 todos.start()
 

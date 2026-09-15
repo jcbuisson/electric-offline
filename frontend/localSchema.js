@@ -1,9 +1,15 @@
+
 export async function prepareLocalDB(db) {
+
    // mutation_queue: row_id is a string, to accomodate all types of primary keys
-   // there is at most one mutation per (table, row_id)
+   // There is at most one mutation per (table, row_id)
+
+   // sync_client: stores only one row, containing a persistent random ID identifying this browser’s local database (shared by all tabs)
+   // The singleton field prevents another row to be inserted
 
    await db.exec(`
       CREATE SEQUENCE IF NOT EXISTS mutation_revision_seq;
+
       CREATE TABLE IF NOT EXISTS sync_client (
          singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
          id UUID NOT NULL DEFAULT gen_random_uuid()
@@ -24,10 +30,9 @@ export async function prepareLocalDB(db) {
          payload JSONB,
          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'failed')),
          failure_reason TEXT,
+         acknowledged_version NUMERIC,
+         revision BIGINT NOT NULL DEFAULT nextval('mutation_revision_seq'),
          UNIQUE (table_name, row_id)
       );
-
-      ALTER TABLE mutation_queue ADD COLUMN IF NOT EXISTS acknowledged_version NUMERIC;
-      ALTER TABLE mutation_queue ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT nextval('mutation_revision_seq');
    `)
 }

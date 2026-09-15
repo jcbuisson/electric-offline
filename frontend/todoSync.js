@@ -306,7 +306,7 @@ export function createTodoSync(db, {
          while (true) {
             // Skip failed entries and writes already acknowledged by the API.
             // Acknowledged writes stay in the queue solely to await Electric.
-            const { rows } = await db.query("SELECT * FROM mutation_queue WHERE status = 'pending' AND acknowledged_version IS NULL ORDER BY seq LIMIT 1")
+            const { rows } = await db.query("SELECT * FROM mutation_queue WHERE table_name = 'todo' AND status = 'pending' AND acknowledged_version IS NULL ORDER BY seq LIMIT 1")
             const mutation = rows[0]
             if (!mutation) break
             try {
@@ -475,7 +475,7 @@ export function createTodoSync(db, {
          SELECT
             count(*) FILTER (WHERE status = 'pending')::int AS pending,
             count(*) FILTER (WHERE status = 'failed')::int AS failed
-         FROM mutation_queue
+         FROM mutation_queue WHERE table_name = 'todo'
       `)
       const { pending, failed } = rows[0]
       const online = network.onLine && syncConnected

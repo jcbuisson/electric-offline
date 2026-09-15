@@ -4,11 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f7f4" />
-    <title>Offline Todos</title>
+    <title>Offline users & groups</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
     <main>
+      <section id="directory" aria-label="Users and groups"></section>
+      <section id="todos" aria-label="Todos">
       <header>
         <div>
           <p class="eyebrow">Electric + PGlite</p>
@@ -24,6 +26,7 @@
 
       <ul id="todo-list" aria-live="polite"></ul>
       <p id="empty" class="empty" hidden>No todos yet.</p>
+      </section>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

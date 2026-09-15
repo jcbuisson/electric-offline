@@ -33,6 +33,7 @@ test('tabs share offline edits, elect a successor offline, and resume sync', { t
       await context.route('http://localhost:3200/**', async route => {
          if (offline) return route.abort()
          const url = new URL(route.request().url())
+         if (url.searchParams.get('table') !== 'todo') return route.abort()
          const initial = url.searchParams.get('offset') === '-1'
          if (initial) initialSnapshots++
          if (!initial && Number(url.searchParams.get('offset')?.split('_')[0]) >= version) {

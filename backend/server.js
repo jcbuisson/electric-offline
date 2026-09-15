@@ -3,20 +3,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServerDB, pool } from './createServerDB.js'
 import { runTodoMutation } from './todoMutations.js'
+import { prepareDirectoryServer } from './directorySchema.js'
+import { directoryRouter } from './directoryRouter.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3001)
 app.use(express.json())
 
-const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist')
-app.use(express.static(dist))
-app.get('*path', (_request, response) => response.sendFile(path.join(dist, 'index.html')))
-
-app.use((error, _request, response, _next) => {
-   console.error(error)
-   const status = error.status || 500
-   response.status(status).json({ error: status === 500 ? 'Database request failed' : error.message })
-})
+app.use('/api/directory', directoryRouter(pool))
 
 start().catch((error) => {
    console.error('Failed to start Todo API:', error)
@@ -25,6 +19,7 @@ start().catch((error) => {
 
 async function start() {
    await createServerDB()
+   await prepareDirectoryServer(pool)
    app.listen(port, () => console.log(`Todo API listening on http://localhost:${port}`))
 }
 
@@ -76,3 +71,14 @@ function requireLabel(value) {
 function badRequest(message) {
    return Object.assign(new Error(message), { status: 400 })
 }
+
+// Register API routes before the SPA fallback, and errors after the routes.
+app.use('/api', (_request, response) => response.status(404).json({ error: 'Unknown API route' }))
+const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist')
+app.use(express.static(dist))
+app.get('*path', (_request, response) => response.sendFile(path.join(dist, 'index.html')))
+app.use((error, _request, response, _next) => {
+   console.error(error)
+   const status = error.status || 500
+   response.status(status).json({ error: status === 500 ? 'Database request failed' : error.message })
+})

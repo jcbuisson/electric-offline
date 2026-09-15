@@ -27,3 +27,25 @@ li input[type='checkbox'] { width: 18px; height: 18px; accent-color: #35382f; }
 .delete:hover { color: #b23d31; }
 .empty { color: #81847b; text-align: center; margin-top: 42px; }
 @media (max-width: 480px) { main { margin-top: 5vh; } header { align-items: start; flex-direction: column; gap: 10px; } }
+
+main { width: min(1100px, calc(100% - 32px)); margin: 5vh auto; }
+[hidden] { display: none !important; }
+#todos { max-width: 680px; margin: 64px auto 0; border-top: 1px solid #dedfd9; padding-top: 32px; }
+.directory-tabs, .directory-tools { display: flex; gap: 10px; margin-bottom: 18px; }
+.directory-tabs button, .directory-tools button, #directory-failures button { padding: 10px 16px; }
+.directory-tabs button[aria-pressed=true] { background: #252721; color: white; }
+.directory-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+#directory-list li { grid-template-columns: 1fr auto; padding: 12px 0; }
+#directory-list small { display: block; color: #62655d; margin: 4px 0; }
+.record-select { background: transparent; padding: 4px 0; font-weight: 650; text-align: left; }
+.record-select[aria-pressed=true] { color: #276442; text-decoration: underline; }
+.record-delete { background: transparent; color: #a3302d; padding: 8px; }
+.directory-form { display: flex; flex-direction: column; padding: 24px; border: 1px solid #dedfd9; border-radius: 12px; }
+.directory-form h2 { margin-top: 0; }
+.directory-form label { display: flex; flex-direction: column; gap: 6px; }
+.directory-form button { padding: 12px; }
+.directory-form fieldset { border: 1px solid #dedfd9; border-radius: 8px; }
+.directory-form .membership-option { flex-direction: row; align-items: center; padding: 8px; }
+.membership-option input { flex: none; }
+#directory-error, #directory-failures { color: #a3302d; background: #ffebe7; padding: 12px; border-radius: 8px; }
+@media (max-width: 700px) { .directory-layout { grid-template-columns: 1fr; } }

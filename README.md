@@ -109,3 +109,56 @@ Run `npx playwright install chromium` once, then `npm run test:browser` to check
 shared offline edits, a single Electric owner, offline takeover, reconnecting, and
 persistence after reload. The browser test mocks remote servers and uses isolated
 browser storage; it does not modify your todos.
+
+## Users and groups
+
+The directory follows the business model in `workspaces/PORTFOLIO/offline`:
+users have first name, last name, and email; groups have a name; users can belong
+to multiple groups. These are shared directory records, not login accounts or
+permission groups. The reference project's database and files are not modified.
+
+Use the Users and Groups tabs above the existing todo list. Search the list,
+select a record to edit it, and press Save. Assign memberships using the checkboxes
+in a user's editor. Group editors display their members. Deleting either parent
+also deletes its memberships. Unsaved form drafts remain intact during sync.
+Failed changes show their server error; edit conflicting values and save again,
+or use Retry failed changes after resolving the cause.
+
+| Reference model | This app's table | Fields |
+| --- | --- | --- |
+| `user` | `app_user` | `id`, `firstname`, `lastname`, `email` |
+| `group` | `app_group` | `id`, `name` |
+| `user_group_relation` | `user_group_relation` | `id`, `user_uid`, `group_uid` |
+
+This app keeps its UUID `id` convention instead of the reference's `uid` field.
+The `user_uid` and `group_uid` fields reference those parent IDs. Emails and group
+names are unique, ignoring case, among active records. First or last name and a
+valid email are required for a user; a group requires a name.
+
+The worker owns three additional Electric shapes, including their tombstones.
+Directory mutations share the local queue and client identity with todos, but
+have their own uploader and status indicator. Parent creates are acknowledged by
+the API before queued memberships are sent. A deterministic membership UUID makes
+concurrent additions of the same user/group pair converge to one relationship.
+Memberships can be removed and re-added; deleted users and groups cannot be
+resurrected by delayed edits. Concurrent edits to the same record still use the
+existing last-write-wins behavior.
+
+The server's `directory_mutation_cursor` tracks retries separately for each
+client/table/record. Parent deletion and its membership tombstones commit in one
+transaction. Foreign keys and parent row locks prevent dangling memberships when
+deletions race with new assignments. Local tables tolerate different shape arrival
+orders; membership reads join against visible parents.
+
+New files:
+
+- `shared/directoryModels.js`: field definitions, validation, membership identities.
+- `backend/directorySchema.js`, `directoryMutations.js`, `directoryRouter.js`: server schema and versioned mutation API.
+- `frontend/directorySchema.js`, `directorySync.js`: local tables, offline mutations, and shape reconciliation.
+- `frontend/directoryUI.js`: lists, editors, memberships, and failure messages.
+
+Restart the API to create the new tables, then close and reopen all app tabs so
+the elected worker loads the new schema and sync service. No reference-project
+records are imported automatically. Existing local todos and queued writes stay
+in place. `npm test` covers directory ordering, tombstones, uniqueness and retries;
+`npm run test:browser` also covers offline user/group editing across tabs.

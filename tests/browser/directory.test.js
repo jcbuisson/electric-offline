@@ -37,7 +37,7 @@ test('users, groups and memberships work offline across tabs and reconnect', { t
       })
       await context.route('http://localhost:3200/**', async route => {
          const url = new URL(route.request().url()), table = url.searchParams.get('table')
-         if (offline || table === 'todo') return route.abort()
+         if (offline) return route.abort()
          if (url.searchParams.get('offset') !== '-1') await new Promise(resolve => setTimeout(resolve, 1500))
          if (offline) return route.abort()
          const rows = (await remote.query(`SELECT * FROM ${table}`)).rows
@@ -109,6 +109,24 @@ test('users, groups and memberships work offline across tabs and reconnect', { t
       await b.reload()
       await b.getByRole('button', { name: 'Edit user Alicia Example', exact: true }).waitFor()
       assert.deepEqual(errors, [])
-      console.log('Directory browser: workflow complete')
+      // Keep the shared-worker regression on directory records.
+      offline = true; await context.setOffline(true)
+      const aIsLeader = await a.evaluate(async () => (await import('/createLocalDB.js')).db.isLeader)
+      const survivor = aIsLeader ? b : a
+      await (aIsLeader ? a : b).close()
+      await survivor.waitForFunction(async () => {
+         try {
+            const { db } = await import('/createLocalDB.js')
+            return db.isLeader && (await db.query('SELECT 1')).rows.length === 1
+         } catch { return false }
+      })
+      await survivor.getByRole('button', { name: 'Groups', exact: true }).click()
+      await survivor.getByLabel('Group name', { exact: true }).fill('After takeover')
+      await survivor.locator('#directory-detail').getByRole('button', { name: 'Save', exact: true }).click()
+      await survivor.getByRole('button', { name: 'Edit group After takeover', exact: true }).waitFor().catch(async error => {
+         console.log('Takeover state:', await survivor.locator('#directory').innerText())
+         throw error
+      })
+      assert.deepEqual(errors, [])
    } finally { await context?.unrouteAll({ behavior: 'ignoreErrors' }); await browser?.close(); await server.close(); await remote.close() }
 })

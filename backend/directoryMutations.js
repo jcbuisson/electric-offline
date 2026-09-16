@@ -1,6 +1,6 @@
 import { directoryModel } from '../shared/directoryModels.js'
 
-// Like todo_mutation_cursor, receipts serialize and deduplicate each client's
+// Mutation receipts serialize and deduplicate each client's
 // requests. Server versions are separate: they acknowledge Electric delivery.
 export async function applyDirectoryMutation(tx, { clientId, revision, table, id, action, values }) {
    const { fields } = directoryModel(table)

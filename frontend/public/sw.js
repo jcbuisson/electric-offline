@@ -1,6 +1,6 @@
-const CACHE_PREFIX = 'offline-todos-'
+const CACHE_PREFIX = 'offline-directory-'
 // New worker-based client assets must replace the previous app cache.
-const CACHE = `${CACHE_PREFIX}v4`
+const CACHE = `${CACHE_PREFIX}v1`
 const CACHEABLE_DESTINATIONS = new Set(['script', 'style', 'image', 'font', 'worker', 'manifest'])
 
 self.addEventListener('install', (event) => {
@@ -16,7 +16,7 @@ self.addEventListener('activate', (event) => {
       const names = await caches.keys()
       // Deletes obsolete app caches during activation.
       await Promise.all(names
-         .filter((name) => name.startsWith(CACHE_PREFIX) && name !== CACHE)
+         .filter((name) => name.startsWith('offline-') && name !== CACHE)
          .map((name) => caches.delete(name)))
       await self.clients.claim()
    })())

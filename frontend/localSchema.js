@@ -16,12 +16,6 @@ export async function prepareLocalDB(db) {
       );
       INSERT INTO sync_client (singleton) VALUES (true) ON CONFLICT DO NOTHING;
 
-      CREATE TABLE IF NOT EXISTS todo (
-         id UUID PRIMARY KEY,
-         label TEXT NOT NULL,
-         completed BOOLEAN NOT NULL DEFAULT FALSE
-      );
-
       CREATE TABLE IF NOT EXISTS mutation_queue (
          seq SERIAL PRIMARY KEY,
          table_name TEXT NOT NULL,

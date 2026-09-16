@@ -3,7 +3,6 @@ import { worker } from '@electric-sql/pglite/worker'
 import { prepareLocalDB } from './localSchema.js'
 import { prepareDirectoryLocal } from './directorySchema.js'
 import { createDirectorySync } from './directorySync.js'
-import { createTodoSync } from './todoSync.js'
 import wasmUrl from '../node_modules/@electric-sql/pglite/dist/pglite.wasm?url'
 import initdbUrl from '../node_modules/@electric-sql/pglite/dist/initdb.wasm?url'
 import bundleUrl from '../node_modules/@electric-sql/pglite/dist/pglite.data?url'
@@ -33,12 +32,6 @@ await worker({
       await prepareLocalDB(db)
       await prepareDirectoryLocal(db)
       // Only the elected worker reaches init: it owns both the database and sync.
-      const todos = createTodoSync(db, {
-         events: globalThis,
-         channel: new BroadcastChannel('offline-todos-events'),
-         fetchRequest: (url, options) => fetch(new URL(url, location.origin), options),
-      })
-      todos.start()
       const directory = createDirectorySync(db, {
          channel: new BroadcastChannel('offline-directory-events'),
          fetchRequest: (url, options) => fetch(new URL(url, location.origin), options),

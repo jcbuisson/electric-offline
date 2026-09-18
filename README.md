@@ -41,8 +41,7 @@ Open <http://localhost:3001>. Keep `DATABASE_URL` set when starting the API.
 ## Managing records
 
 Users have a first name, last name, and email. Groups have a name, and users can
-belong to multiple groups. These are shared directory records, not authentication
-accounts or permission groups.
+belong to multiple groups.
 
 Search the Users or Groups list, select a record to edit it, and press Save.
 Assign memberships using the checkboxes in a user's editor. Group editors display
